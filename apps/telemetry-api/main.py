@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from collectors.sflow_rt_client import SFlowRTClient
+from routers import flows as flows_router
+from routers import interfaces as interfaces_router
 from services.ingest import ingestion_loop
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -25,6 +27,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="FlowMind Telemetry API", lifespan=lifespan)
+
+app.include_router(flows_router.router)
+app.include_router(interfaces_router.router)
 
 
 @app.get("/health")
