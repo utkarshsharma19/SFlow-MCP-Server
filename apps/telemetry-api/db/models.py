@@ -59,6 +59,36 @@ class InterfaceUtilizationMinute(Base):
     )
 
 
+class BaselineSnapshot(Base):
+    """Rolling baseline per device/interface/hour for anomaly detection.
+
+    Computed every 5 minutes over a 7-day rolling window. Diurnal
+    bucketing (hour_of_day 0-23) captures weekday-morning vs
+    weekend-midnight differences without over-fitting to a single day.
+    """
+
+    __tablename__ = "baseline_snapshots"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    computed_at = Column(DateTime(timezone=True), nullable=False)
+    device = Column(String(255), nullable=False)
+    interface = Column(String(255), nullable=False)
+    hour_of_day = Column(Integer, nullable=False)     # 0-23
+    metric = Column(String(64), nullable=False)       # 'bytes' | 'util_pct' | ...
+    mean_value = Column(Float, nullable=False)
+    stddev_value = Column(Float, nullable=False)
+    sample_count = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_baseline_device_if_hour",
+            "device",
+            "interface",
+            "hour_of_day",
+        ),
+    )
+
+
 class AnomalyEvent(Base):
     """Detected anomaly events with severity and plain-language summary."""
 
