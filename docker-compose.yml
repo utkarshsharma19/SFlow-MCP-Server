@@ -22,6 +22,14 @@ services:
     image: redis:7-alpine
     ports: ['6379:6379']
 
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - '16686:16686'   # Jaeger UI
+      - '4317:4317'     # OTLP gRPC receiver
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
   telemetry-api:
     build: ./apps/telemetry-api
     ports: ['8080:8080']
@@ -30,7 +38,9 @@ services:
       REDIS_URL: redis://redis:6379
       SFLOW_RT_URL: http://sflow-rt:8008
       API_KEYS: ${API_KEYS:-dev-insecure-key}
-    depends_on: [postgres, redis, sflow-rt]
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SERVICE_NAME: flowmind-telemetry-api
+    depends_on: [postgres, redis, sflow-rt, jaeger]
 
   mcp-server:
     build: ./apps/mcp-server

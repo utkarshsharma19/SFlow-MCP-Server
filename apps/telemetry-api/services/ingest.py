@@ -7,10 +7,12 @@ estimate so downstream code can compute confidence notes.
 """
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List
 
+import otel
 from collectors.sflow_rt_client import SFlowRTClient
 from db import AsyncSessionLocal
 from db.models import FlowSummaryMinute, InterfaceUtilizationMinute
@@ -98,27 +100,61 @@ def normalize_counters(counters: List[InterfaceCounter]) -> List[dict]:
 async def ingestion_loop(client: SFlowRTClient):
     """Main polling loop. Runs forever with POLL_INTERVAL_SECONDS cadence."""
     log.info(f"Starting ingestion loop (interval={POLL_INTERVAL_SECONDS}s)")
+    tracer = otel.get_tracer("flowmind.ingest")
     while True:
+        start = time.monotonic()
+        span_cm = (
+            tracer.start_as_current_span("ingest.cycle")
+            if tracer is not None
+            else _noop_cm()
+        )
         try:
-            flows = await client.get_top_flows(max_flows=500)
-            counters = await client.get_interface_counters()
+            with span_cm:
+                ok = await client.health_check()
+                otel.set_sflow_up(ok)
 
-            flow_rows = normalize_flows(flows)
-            counter_rows = normalize_counters(counters)
+                flows = await client.get_top_flows(max_flows=500)
+                counters = await client.get_interface_counters()
 
-            async with AsyncSessionLocal() as session:
-                if flow_rows:
-                    session.add_all([FlowSummaryMinute(**r) for r in flow_rows])
-                if counter_rows:
-                    session.add_all(
-                        [InterfaceUtilizationMinute(**r) for r in counter_rows]
+                flow_rows = normalize_flows(flows)
+                counter_rows = normalize_counters(counters)
+
+                async with AsyncSessionLocal() as session:
+                    if flow_rows:
+                        session.add_all([FlowSummaryMinute(**r) for r in flow_rows])
+                    if counter_rows:
+                        session.add_all(
+                            [InterfaceUtilizationMinute(**r) for r in counter_rows]
+                        )
+                    await session.commit()
+
+                if otel.flows_ingested is not None:
+                    otel.flows_ingested.add(
+                        len(flow_rows), {"result": "ok", "kind": "flow"}
                     )
-                await session.commit()
+                    otel.flows_ingested.add(
+                        len(counter_rows), {"result": "ok", "kind": "counter"}
+                    )
+                if otel.ingestion_duration is not None:
+                    otel.ingestion_duration.record(
+                        time.monotonic() - start, {"phase": "cycle"}
+                    )
 
-            log.info(
-                f"Ingested {len(flow_rows)} flow rows, {len(counter_rows)} counter rows"
-            )
+                log.info(
+                    f"Ingested {len(flow_rows)} flow rows, "
+                    f"{len(counter_rows)} counter rows"
+                )
         except Exception as e:
             log.error(f"Ingestion loop error: {e}", exc_info=True)
+            if otel.flows_ingested is not None:
+                otel.flows_ingested.add(1, {"result": "error"})
 
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+
+class _noop_cm:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
