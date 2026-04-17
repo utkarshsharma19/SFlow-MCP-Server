@@ -4,8 +4,8 @@ Resources differ from tools: they carry reference data the model reads
 for context, not analytics results. MCP clients may cache these, so
 never use resources for live metrics — use tools instead.
 """
+from app import mcp
 from client import get_telemetry
-from server import mcp
 
 
 @mcp.resource("inventory://devices")
