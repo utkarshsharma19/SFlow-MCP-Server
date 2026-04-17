@@ -8,6 +8,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://localhost:8080")
+TELEMETRY_API_KEY = os.getenv("TELEMETRY_API_KEY", "dev-insecure-key")
 
 _client: Optional[httpx.AsyncClient] = None
 
@@ -15,7 +16,11 @@ _client: Optional[httpx.AsyncClient] = None
 def get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(base_url=TELEMETRY_API_URL, timeout=15)
+        _client = httpx.AsyncClient(
+            base_url=TELEMETRY_API_URL,
+            timeout=15,
+            headers={"X-API-Key": TELEMETRY_API_KEY},
+        )
     return _client
 
 

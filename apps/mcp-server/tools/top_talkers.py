@@ -1,8 +1,10 @@
 from client import get_telemetry
+from middleware.ratelimit import rate_limit
 from server import mcp
 
 
 @mcp.tool()
+@rate_limit(max_calls=30, window_seconds=60)
 async def get_top_talkers(
     window_minutes: int = 15,
     scope: str = "global",

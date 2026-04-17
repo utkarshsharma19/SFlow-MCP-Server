@@ -1,8 +1,10 @@
 from client import get_telemetry
+from middleware.ratelimit import rate_limit
 from server import mcp
 
 
 @mcp.tool()
+@rate_limit(max_calls=10, window_seconds=60)
 async def explain_hot_link(
     device: str,
     interface: str,
