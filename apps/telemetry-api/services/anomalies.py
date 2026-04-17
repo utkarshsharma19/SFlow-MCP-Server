@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import otel
 from db import AsyncSessionLocal
 from db.models import (
     AnomalyEvent,
@@ -173,6 +174,11 @@ async def run_anomaly_detection() -> int:
             f"Wrote {len(all_events)} anomaly events "
             f"(threshold={len(threshold_events)}, spike={len(spike_events)})"
         )
+        if otel.anomalies_detected is not None:
+            for ev in all_events:
+                otel.anomalies_detected.add(
+                    1, {"severity": ev.severity, "type": ev.anomaly_type}
+                )
     return len(all_events)
 
 
