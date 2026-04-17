@@ -10,6 +10,7 @@ from services.flows import protocol_name
 
 async def explain_hot_link(
     db: AsyncSession,
+    tenant_id: str,
     device: str,
     interface: str,
     window_minutes: int = 15,
@@ -18,6 +19,7 @@ async def explain_hot_link(
 
     util_q = (
         select(InterfaceUtilizationMinute)
+        .where(InterfaceUtilizationMinute.tenant_id == tenant_id)
         .where(InterfaceUtilizationMinute.device == device)
         .where(InterfaceUtilizationMinute.interface == interface)
         .where(InterfaceUtilizationMinute.ts_bucket >= since)
@@ -42,6 +44,7 @@ async def explain_hot_link(
             FlowSummaryMinute.protocol,
             func.sum(FlowSummaryMinute.bytes_estimated).label("total_bytes"),
         )
+        .where(FlowSummaryMinute.tenant_id == tenant_id)
         .where(FlowSummaryMinute.device == device)
         .where(FlowSummaryMinute.interface == interface)
         .where(FlowSummaryMinute.ts_bucket >= since)

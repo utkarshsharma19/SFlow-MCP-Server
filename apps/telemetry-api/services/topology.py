@@ -13,7 +13,7 @@ from db.models import FlowSummaryMinute, InterfaceUtilizationMinute
 INVENTORY_LOOKBACK_HOURS = 24
 
 
-async def list_devices(db: AsyncSession) -> dict:
+async def list_devices(db: AsyncSession, tenant_id: str) -> dict:
     since = datetime.now(timezone.utc) - timedelta(hours=INVENTORY_LOOKBACK_HOURS)
     q = (
         select(
@@ -23,6 +23,7 @@ async def list_devices(db: AsyncSession) -> dict:
                 func.distinct(InterfaceUtilizationMinute.interface)
             ).label("interface_count"),
         )
+        .where(InterfaceUtilizationMinute.tenant_id == tenant_id)
         .where(InterfaceUtilizationMinute.ts_bucket >= since)
         .group_by(InterfaceUtilizationMinute.device)
         .order_by(InterfaceUtilizationMinute.device)
@@ -42,7 +43,7 @@ async def list_devices(db: AsyncSession) -> dict:
     }
 
 
-async def list_interfaces(db: AsyncSession) -> dict:
+async def list_interfaces(db: AsyncSession, tenant_id: str) -> dict:
     since = datetime.now(timezone.utc) - timedelta(hours=INVENTORY_LOOKBACK_HOURS)
     q = (
         select(
@@ -52,6 +53,7 @@ async def list_interfaces(db: AsyncSession) -> dict:
             func.max(InterfaceUtilizationMinute.in_util_pct).label("peak_in"),
             func.max(InterfaceUtilizationMinute.out_util_pct).label("peak_out"),
         )
+        .where(InterfaceUtilizationMinute.tenant_id == tenant_id)
         .where(InterfaceUtilizationMinute.ts_bucket >= since)
         .group_by(
             InterfaceUtilizationMinute.device,
@@ -70,6 +72,7 @@ async def list_interfaces(db: AsyncSession) -> dict:
             FlowSummaryMinute.device,
             FlowSummaryMinute.interface,
         )
+        .where(FlowSummaryMinute.tenant_id == tenant_id)
         .where(FlowSummaryMinute.ts_bucket >= since)
         .group_by(FlowSummaryMinute.device, FlowSummaryMinute.interface)
     )

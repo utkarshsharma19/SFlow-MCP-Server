@@ -9,6 +9,7 @@ from db.models import FlowSummaryMinute
 
 async def compare_windows(
     db: AsyncSession,
+    tenant_id: str,
     scope: str,
     baseline_start: datetime,
     baseline_end: datetime,
@@ -18,6 +19,7 @@ async def compare_windows(
     async def window_bytes(start: datetime, end: datetime) -> int:
         q = (
             select(func.coalesce(func.sum(FlowSummaryMinute.bytes_estimated), 0))
+            .where(FlowSummaryMinute.tenant_id == tenant_id)
             .where(FlowSummaryMinute.ts_bucket >= start)
             .where(FlowSummaryMinute.ts_bucket < end)
         )

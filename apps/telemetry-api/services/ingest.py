@@ -15,7 +15,7 @@ from typing import List
 import otel
 from collectors.sflow_rt_client import SFlowRTClient
 from db import AsyncSessionLocal
-from db.models import FlowSummaryMinute, InterfaceUtilizationMinute
+from db.models import DEFAULT_TENANT_ID, FlowSummaryMinute, InterfaceUtilizationMinute
 from shared.schemas.flow import FlowRecord
 from shared.schemas.interface import InterfaceCounter
 
@@ -29,10 +29,15 @@ def minute_bucket(dt: datetime) -> datetime:
     return dt.replace(second=0, microsecond=0)
 
 
-def normalize_flows(records: List[FlowRecord]) -> List[dict]:
+def normalize_flows(
+    records: List[FlowRecord], tenant_id: str = DEFAULT_TENANT_ID
+) -> List[dict]:
     """Group raw FlowRecords into per-minute buckets and apply sampling correction.
 
     Key rule: bytes_estimated = raw_bytes * sampling_rate.
+
+    tenant_id defaults to DEFAULT_TENANT_ID for single-source installs. PR 14
+    (NetFlow/IPFIX adapters) will plumb per-source tenant mapping through here.
     """
     buckets: dict = defaultdict(
         lambda: {"bytes": 0, "packets": 0, "sampling_rate": 1}
@@ -54,6 +59,7 @@ def normalize_flows(records: List[FlowRecord]) -> List[dict]:
     for (ts_bucket, device, interface, src_ip, dst_ip, protocol), vals in buckets.items():
         rows.append(
             dict(
+                tenant_id=tenant_id,
                 ts_bucket=ts_bucket,
                 device=device,
                 interface=interface,
@@ -68,7 +74,9 @@ def normalize_flows(records: List[FlowRecord]) -> List[dict]:
     return rows
 
 
-def normalize_counters(counters: List[InterfaceCounter]) -> List[dict]:
+def normalize_counters(
+    counters: List[InterfaceCounter], tenant_id: str = DEFAULT_TENANT_ID
+) -> List[dict]:
     """Convert raw byte counters to per-minute utilization percentages.
 
     v1 assumes the polling window equals POLL_INTERVAL_SECONDS. v2 should
@@ -84,6 +92,7 @@ def normalize_counters(counters: List[InterfaceCounter]) -> List[dict]:
         speed = c.if_speed if c.if_speed > 0 else 1_000_000_000
         rows.append(
             dict(
+                tenant_id=tenant_id,
                 ts_bucket=now,
                 device=c.agent,
                 interface=c.if_name,

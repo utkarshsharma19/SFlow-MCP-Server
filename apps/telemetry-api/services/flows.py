@@ -1,7 +1,8 @@
 """Top-talker query logic.
 
-All query logic lives in the service layer. Routers stay thin;
-MCP server in PR 6 calls these endpoints and never touches the DB.
+All query logic lives in the service layer. Routers stay thin. Every
+query is tenant-scoped from PR 20 onward — no caller can read flows
+belonging to another tenant.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -19,6 +20,7 @@ def protocol_name(proto: int) -> str:
 
 async def get_top_talkers(
     db: AsyncSession,
+    tenant_id: str,
     window_minutes: int,
     scope: str = "global",
     limit: int = 10,
@@ -33,6 +35,7 @@ async def get_top_talkers(
             func.sum(FlowSummaryMinute.bytes_estimated).label("total_bytes"),
             func.avg(FlowSummaryMinute.sampling_rate).label("avg_sampling_rate"),
         )
+        .where(FlowSummaryMinute.tenant_id == tenant_id)
         .where(FlowSummaryMinute.ts_bucket >= since)
         .group_by(
             FlowSummaryMinute.src_ip,

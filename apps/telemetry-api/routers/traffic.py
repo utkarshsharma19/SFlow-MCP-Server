@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from auth.context import TenantContext, require_role
 from db import get_db
 from services.traffic_compare import compare_windows
 
@@ -27,6 +28,7 @@ async def compare(
     current_start: str = Query(...),
     current_end: str = Query(...),
     db: AsyncSession = Depends(get_db),
+    ctx: TenantContext = Depends(require_role("analyst")),
 ):
     bs = _parse_iso("baseline_start", baseline_start)
     be = _parse_iso("baseline_end", baseline_end)
@@ -34,4 +36,4 @@ async def compare(
     ce = _parse_iso("current_end", current_end)
     if be <= bs or ce <= cs:
         raise HTTPException(status_code=400, detail="End must be after start for both windows")
-    return await compare_windows(db, scope, bs, be, cs, ce)
+    return await compare_windows(db, ctx.tenant_id, scope, bs, be, cs, ce)
