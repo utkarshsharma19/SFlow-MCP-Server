@@ -1,7 +1,7 @@
-"""Interface utilization query logic."""
+"""Interface utilization query logic (tenant-scoped from PR 20)."""
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import InterfaceUtilizationMinute
@@ -11,6 +11,7 @@ UTIL_BREACH_THRESHOLD_PCT = 80.0
 
 async def get_interface_utilization(
     db: AsyncSession,
+    tenant_id: str,
     device: str,
     interface: str,
     window_minutes: int,
@@ -19,6 +20,7 @@ async def get_interface_utilization(
 
     q = (
         select(InterfaceUtilizationMinute)
+        .where(InterfaceUtilizationMinute.tenant_id == tenant_id)
         .where(InterfaceUtilizationMinute.device == device)
         .where(InterfaceUtilizationMinute.interface == interface)
         .where(InterfaceUtilizationMinute.ts_bucket >= since)

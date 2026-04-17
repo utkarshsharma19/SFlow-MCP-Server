@@ -10,6 +10,7 @@ from services.flows import protocol_name
 
 async def summarize_protocol_mix(
     db: AsyncSession,
+    tenant_id: str,
     scope: str = "global",
     window_minutes: int = 15,
 ) -> dict:
@@ -21,6 +22,7 @@ async def summarize_protocol_mix(
             func.sum(FlowSummaryMinute.bytes_estimated).label("total_bytes"),
             func.sum(FlowSummaryMinute.packets_estimated).label("total_packets"),
         )
+        .where(FlowSummaryMinute.tenant_id == tenant_id)
         .where(FlowSummaryMinute.ts_bucket >= since)
         .group_by(FlowSummaryMinute.protocol)
     )

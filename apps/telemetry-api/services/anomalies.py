@@ -8,8 +8,9 @@ Two strategies run on every ingestion cycle:
 2. Spike: current 5-minute bytes_estimated vs the matching (device, interface,
    hour_of_day) baseline from PR 7. Z = (cur - mean) / stddev, fires at Z >= 3.
 
-Events are persisted to `anomaly_events` with a human-readable `summary` so the
-MCP layer can surface them verbatim to callers.
+All queries are tenant-scoped from PR 20 onward. The loop iterates over
+every active tenant so one tenant's quiet network never masks another
+tenant's incident.
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,7 @@ from db.models import (
     BaselineSnapshot,
     FlowSummaryMinute,
     InterfaceUtilizationMinute,
+    Tenant,
 )
 
 log = logging.getLogger(__name__)
@@ -45,14 +47,17 @@ def util_severity(pct: float) -> str:
     return "low"
 
 
-async def detect_threshold_breaches(session: AsyncSession) -> list[AnomalyEvent]:
-    """Find the latest utilization sample per device/interface and flag breaches."""
+async def detect_threshold_breaches(
+    session: AsyncSession, tenant_id: str
+) -> list[AnomalyEvent]:
+    """Latest util sample per device/interface, within tenant scope."""
     subq = (
         select(
             InterfaceUtilizationMinute.device,
             InterfaceUtilizationMinute.interface,
             func.max(InterfaceUtilizationMinute.ts_bucket).label("latest_ts"),
         )
+        .where(InterfaceUtilizationMinute.tenant_id == tenant_id)
         .group_by(
             InterfaceUtilizationMinute.device,
             InterfaceUtilizationMinute.interface,
@@ -67,6 +72,7 @@ async def detect_threshold_breaches(session: AsyncSession) -> list[AnomalyEvent]
             & (InterfaceUtilizationMinute.interface == subq.c.interface)
             & (InterfaceUtilizationMinute.ts_bucket == subq.c.latest_ts),
         )
+        .where(InterfaceUtilizationMinute.tenant_id == tenant_id)
         .where(
             (InterfaceUtilizationMinute.in_util_pct >= UTIL_THRESHOLD_WARN)
             | (InterfaceUtilizationMinute.out_util_pct >= UTIL_THRESHOLD_WARN)
@@ -82,6 +88,7 @@ async def detect_threshold_breaches(session: AsyncSession) -> list[AnomalyEvent]
         direction = "inbound" if row.in_util_pct > row.out_util_pct else "outbound"
         events.append(
             AnomalyEvent(
+                tenant_id=tenant_id,
                 ts=now,
                 scope=f"device:{row.device}/interface:{row.interface}",
                 anomaly_type="threshold_breach",
@@ -100,7 +107,9 @@ async def detect_threshold_breaches(session: AsyncSession) -> list[AnomalyEvent]
     return events
 
 
-async def detect_spikes(session: AsyncSession) -> list[AnomalyEvent]:
+async def detect_spikes(
+    session: AsyncSession, tenant_id: str
+) -> list[AnomalyEvent]:
     """Compare current 5-min bytes vs hourly baseline using Z-score."""
     now = datetime.now(timezone.utc)
     hour = now.hour
@@ -112,6 +121,7 @@ async def detect_spikes(session: AsyncSession) -> list[AnomalyEvent]:
             FlowSummaryMinute.interface,
             func.sum(FlowSummaryMinute.bytes_estimated).label("current_bytes"),
         )
+        .where(FlowSummaryMinute.tenant_id == tenant_id)
         .where(FlowSummaryMinute.ts_bucket >= since)
         .group_by(FlowSummaryMinute.device, FlowSummaryMinute.interface)
     )
@@ -119,7 +129,8 @@ async def detect_spikes(session: AsyncSession) -> list[AnomalyEvent]:
     current = {(r.device, r.interface): int(r.current_bytes) for r in cur_rows}
 
     bl_q = select(BaselineSnapshot).where(
-        (BaselineSnapshot.hour_of_day == hour)
+        (BaselineSnapshot.tenant_id == tenant_id)
+        & (BaselineSnapshot.hour_of_day == hour)
         & (BaselineSnapshot.metric == "bytes")
     )
     baselines = {
@@ -138,6 +149,7 @@ async def detect_spikes(session: AsyncSession) -> list[AnomalyEvent]:
         severity = "critical" if z >= 6 else "high" if z >= 5 else "medium"
         events.append(
             AnomalyEvent(
+                tenant_id=tenant_id,
                 ts=now,
                 scope=f"device:{device}/interface:{interface}",
                 anomaly_type="spike",
@@ -160,26 +172,45 @@ async def detect_spikes(session: AsyncSession) -> list[AnomalyEvent]:
     return events
 
 
+async def _active_tenant_ids(session: AsyncSession) -> list[str]:
+    q = select(Tenant.id).where(Tenant.is_active.is_(True))
+    return [str(tid) for tid in (await session.execute(q)).scalars().all()]
+
+
 async def run_anomaly_detection() -> int:
-    """Run all detectors and persist events. Returns number of events written."""
+    """Run all detectors across every active tenant. Returns total events written."""
+    total = 0
     async with AsyncSessionLocal() as session:
-        threshold_events = await detect_threshold_breaches(session)
-        spike_events = await detect_spikes(session)
-        all_events = threshold_events + spike_events
+        tenant_ids = await _active_tenant_ids(session)
+        all_events: list[AnomalyEvent] = []
+        per_tenant: dict[str, tuple[int, int]] = {}
+        for tid in tenant_ids:
+            threshold_events = await detect_threshold_breaches(session, tid)
+            spike_events = await detect_spikes(session, tid)
+            per_tenant[tid] = (len(threshold_events), len(spike_events))
+            all_events.extend(threshold_events)
+            all_events.extend(spike_events)
         if all_events:
             session.add_all(all_events)
             await session.commit()
-    if all_events:
-        log.info(
-            f"Wrote {len(all_events)} anomaly events "
-            f"(threshold={len(threshold_events)}, spike={len(spike_events)})"
+            total = len(all_events)
+
+    if total:
+        summary = ", ".join(
+            f"{tid[:8]}=t{t}/s{s}" for tid, (t, s) in per_tenant.items() if (t + s)
         )
+        log.info(f"Wrote {total} anomaly events across tenants ({summary})")
         if otel.anomalies_detected is not None:
             for ev in all_events:
                 otel.anomalies_detected.add(
-                    1, {"severity": ev.severity, "type": ev.anomaly_type}
+                    1,
+                    {
+                        "severity": ev.severity,
+                        "type": ev.anomaly_type,
+                        "tenant_id": ev.tenant_id,
+                    },
                 )
-    return len(all_events)
+    return total
 
 
 ANOMALY_INTERVAL_SECONDS = 30

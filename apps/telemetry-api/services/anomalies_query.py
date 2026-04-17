@@ -11,6 +11,7 @@ SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
 async def get_recent_anomalies(
     db: AsyncSession,
+    tenant_id: str,
     scope: str = "global",
     severity_min: str = "medium",
     since_minutes: int = 30,
@@ -21,6 +22,7 @@ async def get_recent_anomalies(
 
     q = (
         select(AnomalyEvent)
+        .where(AnomalyEvent.tenant_id == tenant_id)
         .where(AnomalyEvent.ts >= since)
         .where(AnomalyEvent.severity.in_(allowed))
         .order_by(AnomalyEvent.ts.desc())
