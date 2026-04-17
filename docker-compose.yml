@@ -29,6 +29,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://flowmind:flowmind_dev@postgres/flowmind
       REDIS_URL: redis://redis:6379
       SFLOW_RT_URL: http://sflow-rt:8008
+      API_KEYS: ${API_KEYS:-dev-insecure-key}
     depends_on: [postgres, redis, sflow-rt]
 
   mcp-server:
@@ -36,6 +37,7 @@ services:
     ports: ['8090:8090']
     environment:
       TELEMETRY_API_URL: http://telemetry-api:8080
+      TELEMETRY_API_KEY: ${TELEMETRY_API_KEY:-dev-insecure-key}
     depends_on: [telemetry-api]
 
 volumes:
