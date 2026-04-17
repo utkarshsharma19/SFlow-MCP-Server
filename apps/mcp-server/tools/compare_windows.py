@@ -1,6 +1,6 @@
+from app import mcp
 from client import get_telemetry
 from middleware.ratelimit import rate_limit
-from server import mcp
 
 
 @mcp.tool()

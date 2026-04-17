@@ -2,10 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY apps/telemetry-api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . /app/apps/telemetry-api/
+COPY apps/telemetry-api/ /app/apps/telemetry-api/
 COPY shared /app/shared/
 
 ENV PYTHONPATH=/app

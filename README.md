@@ -35,6 +35,32 @@ docker compose up
 ```
 
 Starts sFlow-RT, Postgres, Redis, the telemetry API, and the MCP server.
+The MCP server is exposed over Streamable HTTP at `http://localhost:8090/mcp`.
+
+## Testing the MCP server
+
+Create a local Python 3.11 virtualenv, install the dev dependencies, then run
+the test suite:
+
+```
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pytest -q
+```
+
+For an interactive MCP protocol test, run the Inspector against the stdio
+entrypoint:
+
+```
+npx @modelcontextprotocol/inspector .venv/bin/python apps/mcp-server/server.py
+```
+
+Or start the full stack and connect the Inspector to
+`http://localhost:8090/mcp` using Streamable HTTP:
+
+```
+docker compose up --build
+```
 
 ## Docs
 

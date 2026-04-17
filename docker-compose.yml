@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   sflow-rt:
     image: sflow/sflow-rt:latest
@@ -31,7 +29,9 @@ services:
       - COLLECTOR_OTLP_ENABLED=true
 
   telemetry-api:
-    build: ./apps/telemetry-api
+    build:
+      context: .
+      dockerfile: apps/telemetry-api/Dockerfile
     ports: ['8080:8080']
     environment:
       DATABASE_URL: postgresql+asyncpg://flowmind:flowmind_dev@postgres/flowmind
@@ -43,7 +43,9 @@ services:
     depends_on: [postgres, redis, sflow-rt, jaeger]
 
   mcp-server:
-    build: ./apps/mcp-server
+    build:
+      context: .
+      dockerfile: apps/mcp-server/Dockerfile
     ports: ['8090:8090']
     environment:
       TELEMETRY_API_URL: http://telemetry-api:8080
