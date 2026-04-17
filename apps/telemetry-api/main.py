@@ -6,8 +6,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from collectors.sflow_rt_client import SFlowRTClient
+from routers import anomalies as anomalies_router
 from routers import flows as flows_router
 from routers import interfaces as interfaces_router
+from routers import topology as topology_router
+from routers import traffic as traffic_router
 from services.anomalies import anomaly_loop
 from services.baselines import baseline_loop
 from services.ingest import ingestion_loop
@@ -36,6 +39,9 @@ app = FastAPI(title="FlowMind Telemetry API", lifespan=lifespan)
 
 app.include_router(flows_router.router)
 app.include_router(interfaces_router.router)
+app.include_router(anomalies_router.router)
+app.include_router(traffic_router.router)
+app.include_router(topology_router.router)
 
 
 @app.get("/health")
