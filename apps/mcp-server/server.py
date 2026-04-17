@@ -12,7 +12,16 @@ logging.basicConfig(level="INFO")
 mcp = FastMCP("FlowMind Network Telemetry", json_response=True)
 
 # Side-effect imports: each module registers its tool via @mcp.tool()
-from tools import link_utilization, top_talkers  # noqa: E402, F401
+# or resource via @mcp.resource()
+from resources import inventory  # noqa: E402, F401
+from tools import (  # noqa: E402, F401
+    compare_windows,
+    explain_hot_link,
+    link_utilization,
+    protocol_mix,
+    recent_anomalies,
+    top_talkers,
+)
 
 
 if __name__ == "__main__":
