@@ -31,6 +31,7 @@ v1 tools (sFlow-derived):
 v2 tools (gNMI / OpenConfig):
 
 - `get_device_state` — Interface state, BGP peers, queue depth, PFC/ECN counters for a device.
+- `get_rdma_health` — RoCE/RDMA fabric health: PFC pauses, ECN marking, drops on lossless queues.
 
 Every tool response includes a `confidence_note` describing sampling coverage
 (or noting that gNMI snapshots are exact).
