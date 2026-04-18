@@ -19,6 +19,7 @@ from tools import (  # noqa: E402, F401
     explain_hot_link,
     link_utilization,
     protocol_mix,
+    rdma_health,
     recent_anomalies,
     top_talkers,
 )

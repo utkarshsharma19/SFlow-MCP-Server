@@ -13,6 +13,7 @@ from routers import anomalies as anomalies_router
 from routers import devices as devices_router
 from routers import flows as flows_router
 from routers import interfaces as interfaces_router
+from routers import rdma as rdma_router
 from routers import topology as topology_router
 from routers import traffic as traffic_router
 from services.anomalies import anomaly_loop
@@ -52,6 +53,7 @@ app.include_router(anomalies_router.router)
 app.include_router(traffic_router.router)
 app.include_router(topology_router.router)
 app.include_router(devices_router.router)
+app.include_router(rdma_router.router)
 
 
 @app.get("/health")
