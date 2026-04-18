@@ -201,3 +201,89 @@ class AnomalyEvent(Base):
     __table_args__ = (
         Index("ix_anomaly_tenant_ts", "tenant_id", "ts"),
     )
+
+
+# ---------------------------------------------------------------------------
+# gNMI / OpenConfig device state (PR 21)
+# ---------------------------------------------------------------------------
+# These are exact (not sampled) telemetry. No sampling_rate is carried.
+
+class DeviceStateMinute(Base):
+    """OpenConfig interfaces/interface/state per minute snapshot."""
+
+    __tablename__ = "device_state_minute"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    ts_bucket = Column(DateTime(timezone=True), nullable=False)
+    device = Column(String(255), nullable=False)
+    interface = Column(String(255), nullable=False)
+    admin_status = Column(String(16), nullable=False)   # UP|DOWN|TESTING
+    oper_status = Column(String(16), nullable=False)    # UP|DOWN|LOWER_LAYER_DOWN|...
+    last_change = Column(DateTime(timezone=True), nullable=True)
+    speed_bps = Column(BigInteger, nullable=True)
+    mtu = Column(Integer, nullable=True)
+    description = Column(String(255), nullable=True)
+
+    __table_args__ = (
+        Index("ix_devstate_tenant_ts", "tenant_id", "ts_bucket"),
+        Index("ix_devstate_device_if_ts", "device", "interface", "ts_bucket"),
+    )
+
+
+class BGPSessionMinute(Base):
+    """OpenConfig network-instances/.../bgp/neighbors/neighbor/state snapshot."""
+
+    __tablename__ = "bgp_session_minute"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    ts_bucket = Column(DateTime(timezone=True), nullable=False)
+    device = Column(String(255), nullable=False)
+    peer_address = Column(String(64), nullable=False)
+    peer_as = Column(Integer, nullable=True)
+    session_state = Column(String(32), nullable=False)  # IDLE|CONNECT|ACTIVE|OPENSENT|OPENCONFIRM|ESTABLISHED
+    uptime_seconds = Column(BigInteger, nullable=True)
+    prefixes_received = Column(BigInteger, nullable=True)
+    prefixes_sent = Column(BigInteger, nullable=True)
+    last_error = Column(String(255), nullable=True)
+
+    __table_args__ = (
+        Index("ix_bgp_tenant_ts", "tenant_id", "ts_bucket"),
+        Index("ix_bgp_device_peer_ts", "device", "peer_address", "ts_bucket"),
+    )
+
+
+class QueueStatsMinute(Base):
+    """qos/interfaces/.../queues/queue/state — buffer + PFC + ECN telemetry.
+
+    Critical for RDMA / RoCE fabrics (PR 23): pfc_pause_rx > 0 indicates
+    receiver-side congestion; ecn_marked_packets > 0 indicates DCQCN signaling.
+    """
+
+    __tablename__ = "queue_stats_minute"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    ts_bucket = Column(DateTime(timezone=True), nullable=False)
+    device = Column(String(255), nullable=False)
+    interface = Column(String(255), nullable=False)
+    queue_id = Column(Integer, nullable=False)
+    traffic_class = Column(Integer, nullable=True)
+    max_depth_bytes = Column(BigInteger, nullable=False)
+    avg_depth_bytes = Column(BigInteger, nullable=False)
+    pfc_pause_rx = Column(BigInteger, nullable=False, default=0)
+    pfc_pause_tx = Column(BigInteger, nullable=False, default=0)
+    ecn_marked_packets = Column(BigInteger, nullable=False, default=0)
+    dropped_packets = Column(BigInteger, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("ix_queue_tenant_ts", "tenant_id", "ts_bucket"),
+        Index(
+            "ix_queue_device_if_q_ts",
+            "device",
+            "interface",
+            "queue_id",
+            "ts_bucket",
+        ),
+    )

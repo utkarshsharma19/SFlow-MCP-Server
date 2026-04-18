@@ -17,7 +17,9 @@ Four-layer pipeline:
 3. **Intelligence** — MCP server exposing bounded, read-only tools
 4. **Consumption** — Any MCP-compatible client (Claude Desktop, Cursor, custom agents)
 
-## MCP Tools (v1)
+## MCP Tools
+
+v1 tools (sFlow-derived):
 
 - `get_top_talkers` — Who is generating the most traffic?
 - `get_interface_utilization` — How loaded is this link?
@@ -26,7 +28,12 @@ Four-layer pipeline:
 - `summarize_protocol_mix` — What protocols are running?
 - `explain_hot_link` — Why is this interface saturated?
 
-Every tool response includes a `confidence_note` describing sampling coverage.
+v2 tools (gNMI / OpenConfig):
+
+- `get_device_state` — Interface state, BGP peers, queue depth, PFC/ECN counters for a device.
+
+Every tool response includes a `confidence_note` describing sampling coverage
+(or noting that gNMI snapshots are exact).
 
 ## Local development
 
