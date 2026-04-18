@@ -28,6 +28,9 @@ otel = [
     "opentelemetry-instrumentation-fastapi",
     "opentelemetry-instrumentation-sqlalchemy",
 ]
+gnmi = [
+    "pygnmi>=0.8",
+]
 
 [tool.setuptools.packages.find]
 include = ["shared*", "apps*"]

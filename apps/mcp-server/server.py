@@ -15,6 +15,7 @@ logging.basicConfig(level="INFO")
 from resources import inventory  # noqa: E402, F401
 from tools import (  # noqa: E402, F401
     compare_windows,
+    device_state,
     explain_hot_link,
     link_utilization,
     protocol_mix,
