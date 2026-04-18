@@ -16,6 +16,7 @@ import otel
 from collectors.sflow_rt_client import SFlowRTClient
 from db import AsyncSessionLocal
 from db.models import DEFAULT_TENANT_ID, FlowSummaryMinute, InterfaceUtilizationMinute
+from services.tenant_routing import SOURCE_KIND_SFLOW, TenantRouter, get_router
 from shared.schemas.flow import FlowRecord
 from shared.schemas.interface import InterfaceCounter
 
@@ -29,15 +30,24 @@ def minute_bucket(dt: datetime) -> datetime:
     return dt.replace(second=0, microsecond=0)
 
 
-def normalize_flows(
-    records: List[FlowRecord], tenant_id: str = DEFAULT_TENANT_ID
+async def _resolve_tenant(router: TenantRouter | None, agent: str) -> str:
+    """Look up the tenant for an sFlow agent. Falls back to DEFAULT_TENANT_ID."""
+    if router is None:
+        return DEFAULT_TENANT_ID
+    return await router.tenant_for(SOURCE_KIND_SFLOW, agent)
+
+
+async def normalize_flows(
+    records: List[FlowRecord],
+    router: TenantRouter | None = None,
 ) -> List[dict]:
     """Group raw FlowRecords into per-minute buckets and apply sampling correction.
 
     Key rule: bytes_estimated = raw_bytes * sampling_rate.
 
-    tenant_id defaults to DEFAULT_TENANT_ID for single-source installs. PR 14
-    (NetFlow/IPFIX adapters) will plumb per-source tenant mapping through here.
+    Per-source → tenant routing (PR 22): each agent's tenant_id is looked
+    up via the cached TenantRouter. Unmapped agents fall through to
+    DEFAULT_TENANT_ID so single-tenant installs still work.
     """
     buckets: dict = defaultdict(
         lambda: {"bytes": 0, "packets": 0, "sampling_rate": 1}
@@ -55,11 +65,18 @@ def normalize_flows(
         buckets[key]["packets"] += r.packets * r.sampling_rate
         buckets[key]["sampling_rate"] = r.sampling_rate
 
+    # Resolve tenant once per distinct agent — cheap because the router
+    # is in-process cached.
+    distinct_agents = {device for (_, device, _, _, _, _) in buckets.keys()}
+    tenant_for_agent: dict[str, str] = {
+        agent: await _resolve_tenant(router, agent) for agent in distinct_agents
+    }
+
     rows = []
     for (ts_bucket, device, interface, src_ip, dst_ip, protocol), vals in buckets.items():
         rows.append(
             dict(
-                tenant_id=tenant_id,
+                tenant_id=tenant_for_agent[device],
                 ts_bucket=ts_bucket,
                 device=device,
                 interface=interface,
@@ -74,8 +91,9 @@ def normalize_flows(
     return rows
 
 
-def normalize_counters(
-    counters: List[InterfaceCounter], tenant_id: str = DEFAULT_TENANT_ID
+async def normalize_counters(
+    counters: List[InterfaceCounter],
+    router: TenantRouter | None = None,
 ) -> List[dict]:
     """Convert raw byte counters to per-minute utilization percentages.
 
@@ -84,6 +102,10 @@ def normalize_counters(
     """
     rows = []
     now = minute_bucket(datetime.now(timezone.utc))
+    distinct_agents = {c.agent for c in counters}
+    tenant_for_agent: dict[str, str] = {
+        agent: await _resolve_tenant(router, agent) for agent in distinct_agents
+    }
     for c in counters:
         window_in_bytes = c.if_in_octets
         window_out_bytes = c.if_out_octets
@@ -92,7 +114,7 @@ def normalize_counters(
         speed = c.if_speed if c.if_speed > 0 else 1_000_000_000
         rows.append(
             dict(
-                tenant_id=tenant_id,
+                tenant_id=tenant_for_agent[c.agent],
                 ts_bucket=now,
                 device=c.agent,
                 interface=c.if_name,
@@ -110,6 +132,7 @@ async def ingestion_loop(client: SFlowRTClient):
     """Main polling loop. Runs forever with POLL_INTERVAL_SECONDS cadence."""
     log.info(f"Starting ingestion loop (interval={POLL_INTERVAL_SECONDS}s)")
     tracer = otel.get_tracer("flowmind.ingest")
+    router = get_router()
     while True:
         start = time.monotonic()
         span_cm = (
@@ -125,8 +148,8 @@ async def ingestion_loop(client: SFlowRTClient):
                 flows = await client.get_top_flows(max_flows=500)
                 counters = await client.get_interface_counters()
 
-                flow_rows = normalize_flows(flows)
-                counter_rows = normalize_counters(counters)
+                flow_rows = await normalize_flows(flows, router)
+                counter_rows = await normalize_counters(counters, router)
 
                 async with AsyncSessionLocal() as session:
                     if flow_rows:
