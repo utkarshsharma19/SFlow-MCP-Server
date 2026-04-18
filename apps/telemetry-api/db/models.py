@@ -110,6 +110,54 @@ class AuditLog(Base):
 
 
 # ---------------------------------------------------------------------------
+# Per-source → tenant routing (PR 22)
+# ---------------------------------------------------------------------------
+
+class CollectorSource(Base):
+    """Maps (source_kind, source_identifier) to the owning tenant.
+
+    Replaces the DEFAULT_TENANT_ID hardcoding in the ingest loops. A row
+    is keyed on a small set of canonical kinds (sflow|gnmi) plus the
+    source-side identifier the collector sees on the wire — for sFlow
+    that's the agent IP/hostname, for gNMI it's the target hostname.
+
+    Lookups are cached in-process by services.tenant_routing; operators
+    update mappings via scripts/seed.py and the cache picks them up on
+    its next refresh tick.
+    """
+
+    __tablename__ = "collector_sources"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_kind = Column(String(32), nullable=False)         # sflow|gnmi
+    source_identifier = Column(String(255), nullable=False)
+    description = Column(String(255), nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_kind", "source_identifier", name="uq_collector_source_kind_id"
+        ),
+        Index("ix_collector_sources_tenant", "tenant_id"),
+        Index(
+            "ix_collector_sources_lookup", "source_kind", "source_identifier"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Telemetry tables (v1 — extended with tenant_id in PR 20)
 # ---------------------------------------------------------------------------
 

@@ -23,6 +23,7 @@ from db.models import (
     DeviceStateMinute,
     QueueStatsMinute,
 )
+from services.tenant_routing import SOURCE_KIND_GNMI, TenantRouter, get_router
 from shared.schemas.device_state import (
     BGPNeighborState,
     InterfaceState,
@@ -38,13 +39,23 @@ def _bucket(dt: datetime) -> datetime:
     return dt.replace(second=0, microsecond=0)
 
 
-def normalize_interface_state(
-    states: List[InterfaceState], tenant_id: str = DEFAULT_TENANT_ID
+async def _resolve_devices(
+    devices: set[str], router: TenantRouter | None
+) -> dict[str, str]:
+    if router is None:
+        return {d: DEFAULT_TENANT_ID for d in devices}
+    return {d: await router.tenant_for(SOURCE_KIND_GNMI, d) for d in devices}
+
+
+async def normalize_interface_state(
+    states: List[InterfaceState],
+    router: TenantRouter | None = None,
 ) -> list[dict]:
     bucket = _bucket(datetime.now(timezone.utc))
+    tenants = await _resolve_devices({s.device for s in states}, router)
     return [
         dict(
-            tenant_id=tenant_id,
+            tenant_id=tenants[s.device],
             ts_bucket=bucket,
             device=s.device,
             interface=s.interface,
@@ -59,13 +70,15 @@ def normalize_interface_state(
     ]
 
 
-def normalize_bgp_neighbors(
-    sessions: List[BGPNeighborState], tenant_id: str = DEFAULT_TENANT_ID
+async def normalize_bgp_neighbors(
+    sessions: List[BGPNeighborState],
+    router: TenantRouter | None = None,
 ) -> list[dict]:
     bucket = _bucket(datetime.now(timezone.utc))
+    tenants = await _resolve_devices({s.device for s in sessions}, router)
     return [
         dict(
-            tenant_id=tenant_id,
+            tenant_id=tenants[s.device],
             ts_bucket=bucket,
             device=s.device,
             peer_address=s.peer_address,
@@ -80,13 +93,15 @@ def normalize_bgp_neighbors(
     ]
 
 
-def normalize_queue_stats(
-    queues: List[QueueState], tenant_id: str = DEFAULT_TENANT_ID
+async def normalize_queue_stats(
+    queues: List[QueueState],
+    router: TenantRouter | None = None,
 ) -> list[dict]:
     bucket = _bucket(datetime.now(timezone.utc))
+    tenants = await _resolve_devices({q.device for q in queues}, router)
     return [
         dict(
-            tenant_id=tenant_id,
+            tenant_id=tenants[q.device],
             ts_bucket=bucket,
             device=q.device,
             interface=q.interface,
@@ -113,6 +128,7 @@ async def gnmi_ingestion_loop(client: GNMIClient) -> None:
 
     log.info(f"Starting gNMI ingestion loop (interval={GNMI_POLL_INTERVAL_SECONDS}s)")
     tracer = otel.get_tracer("flowmind.gnmi")
+    router = get_router()
 
     while True:
         start = time.monotonic()
@@ -131,9 +147,9 @@ async def gnmi_ingestion_loop(client: GNMIClient) -> None:
                 neighbors = await client.get_bgp_neighbors()
                 queues = await client.get_queue_stats()
 
-                if_rows = normalize_interface_state(interfaces)
-                bgp_rows = normalize_bgp_neighbors(neighbors)
-                queue_rows = normalize_queue_stats(queues)
+                if_rows = await normalize_interface_state(interfaces, router)
+                bgp_rows = await normalize_bgp_neighbors(neighbors, router)
+                queue_rows = await normalize_queue_stats(queues, router)
 
                 async with AsyncSessionLocal() as session:
                     if if_rows:
