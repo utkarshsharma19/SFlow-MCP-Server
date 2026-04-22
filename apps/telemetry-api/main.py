@@ -9,6 +9,7 @@ from collectors.gnmi_client import GNMIClient
 from collectors.sflow_rt_client import SFlowRTClient
 from middleware.auth import APIKeyMiddleware
 from otel import setup_telemetry
+from shared.logging import configure_logging
 from routers import admin as admin_router
 from routers import anomalies as anomalies_router
 from routers import tool_audit as tool_audit_router
@@ -26,7 +27,7 @@ from services.ingest import ingestion_loop
 from services.partition_maintenance import partition_maintenance_loop
 from services.source_freshness_loop import source_freshness_loop
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+configure_logging("flowmind-telemetry-api", level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger(__name__)
 
 

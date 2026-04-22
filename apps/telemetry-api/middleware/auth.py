@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import Request
@@ -21,22 +22,33 @@ from auth.audit import record_access
 from auth.context import TenantContext, hash_api_key
 from db import AsyncSessionLocal
 from db.models import APIKey, Tenant
+from shared.logging import log_context
 
 log = logging.getLogger(__name__)
 
 EXEMPT_PATHS = {"/health", "/docs", "/redoc", "/openapi.json"}
+REQUEST_ID_HEADER = "X-Request-Id"
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # Bind request_id for every request — exempt paths included — so
+        # startup probes and docs show up in logs with correlation ids
+        # when something goes wrong there.
+        request_id = request.headers.get(REQUEST_ID_HEADER) or uuid.uuid4().hex
+
         if request.url.path in EXEMPT_PATHS:
-            return await call_next(request)
+            with log_context(request_id=request_id):
+                response = await call_next(request)
+            response.headers[REQUEST_ID_HEADER] = request_id
+            return response
 
         key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
         if not key:
             return JSONResponse(
                 status_code=401,
                 content={"error": "missing X-API-Key"},
+                headers={REQUEST_ID_HEADER: request_id},
             )
 
         ctx = await _lookup_context(key)
@@ -44,12 +56,20 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=401,
                 content={"error": "invalid or inactive API key"},
+                headers={REQUEST_ID_HEADER: request_id},
             )
 
         request.state.tenant_ctx = ctx
+        request.state.request_id = request_id
         started = time.monotonic()
-        response = await call_next(request)
+        with log_context(
+            tenant_id=ctx.tenant_id,
+            api_key_id=ctx.api_key_id,
+            request_id=request_id,
+        ):
+            response = await call_next(request)
         duration_ms = int((time.monotonic() - started) * 1000)
+        response.headers[REQUEST_ID_HEADER] = request_id
 
         # Audit the access. Don't block the response if this fails.
         await record_access(
