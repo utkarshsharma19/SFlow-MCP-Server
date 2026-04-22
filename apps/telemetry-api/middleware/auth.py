@@ -68,29 +68,49 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 async def _lookup_context(key: str) -> TenantContext | None:
     key_hash = hash_api_key(key)
     async with AsyncSessionLocal() as session:
-        q = (
-            select(APIKey, Tenant)
-            .join(Tenant, Tenant.id == APIKey.tenant_id)
-            .where(APIKey.key_hash == key_hash)
-            .where(APIKey.is_active.is_(True))
-            .where(Tenant.is_active.is_(True))
-        )
-        row = (await session.execute(q)).first()
+        # Auth lookups legitimately span tenants: we don't know whose key
+        # it is until after the hash matches. Bypass RLS for this read,
+        # then re-scope once the tenant is known.
+        from services.rls_session import bypass_rls
+
+        async with bypass_rls(session):
+            q = (
+                select(APIKey, Tenant)
+                .join(Tenant, Tenant.id == APIKey.tenant_id)
+                .where(APIKey.key_hash == key_hash)
+                .where(APIKey.is_active.is_(True))
+                .where(Tenant.is_active.is_(True))
+            )
+            row = (await session.execute(q)).first()
         if row is None:
             return None
         api_key, tenant = row
+
+        now = datetime.now(timezone.utc)
+        if api_key.expires_at is not None and api_key.expires_at <= now:
+            log.info("rejecting expired API key id=%s", api_key.id)
+            return None
 
         # Fire-and-forget last_used_at bump. Outside the read transaction
         # so a slow write can't stall auth.
         await session.execute(
             update(APIKey)
             .where(APIKey.id == api_key.id)
-            .values(last_used_at=datetime.now(timezone.utc))
+            .values(last_used_at=now)
         )
         await session.commit()
+
+        allowlist_raw = api_key.tool_allowlist
+        allowlist = (
+            tuple(allowlist_raw)
+            if isinstance(allowlist_raw, list) and allowlist_raw
+            else None
+        )
 
         return TenantContext(
             tenant_id=str(tenant.id),
             api_key_id=str(api_key.id),
             role=api_key.role,
+            tool_allowlist=allowlist,
+            rate_limit_per_minute=api_key.rate_limit_per_minute,
         )

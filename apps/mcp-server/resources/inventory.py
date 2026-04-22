@@ -27,3 +27,14 @@ async def interface_inventory() -> dict:
     or explain_hot_link.
     """
     return await get_telemetry("/topology/interfaces")
+
+
+@mcp.resource("inventory://gnmi-sources")
+async def gnmi_source_inventory() -> dict:
+    """Devices with active gNMI / OpenConfig telemetry in the last 24 hours.
+
+    Use this to discover which devices support get_device_state before
+    calling it. Empty list means no gNMI targets are configured or the
+    pygnmi extra is not installed.
+    """
+    return await get_telemetry("/devices/gnmi-sources")

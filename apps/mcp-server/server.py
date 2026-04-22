@@ -14,10 +14,14 @@ logging.basicConfig(level="INFO")
 # or resource via @mcp.resource()
 from resources import inventory  # noqa: E402, F401
 from tools import (  # noqa: E402, F401
+    anomaly_summary,
     compare_windows,
+    device_state,
     explain_hot_link,
+    fabric_imbalance,
     link_utilization,
     protocol_mix,
+    rdma_health,
     recent_anomalies,
     top_talkers,
 )

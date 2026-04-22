@@ -1,9 +1,11 @@
 from app import mcp
 from client import get_telemetry
+from middleware.audit import audit_tool
 from middleware.ratelimit import rate_limit
 
 
 @mcp.tool()
+@audit_tool("get_interface_utilization")
 @rate_limit(max_calls=30, window_seconds=60)
 async def get_interface_utilization(
     device: str,

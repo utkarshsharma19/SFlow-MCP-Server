@@ -1,9 +1,11 @@
 from app import mcp
 from client import get_telemetry
+from middleware.audit import audit_tool
 from middleware.ratelimit import rate_limit
 
 
 @mcp.tool()
+@audit_tool("compare_traffic_windows")
 @rate_limit(max_calls=10, window_seconds=60)
 async def compare_traffic_windows(
     scope: str = "global",

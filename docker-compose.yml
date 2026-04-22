@@ -40,6 +40,10 @@ services:
       API_KEYS: ${API_KEYS:-dev-insecure-key}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       OTEL_SERVICE_NAME: flowmind-telemetry-api
+      GNMI_TARGETS: ${GNMI_TARGETS:-}
+      GNMI_USERNAME: ${GNMI_USERNAME:-admin}
+      GNMI_PASSWORD: ${GNMI_PASSWORD:-}
+      GNMI_POLL_INTERVAL_SECONDS: ${GNMI_POLL_INTERVAL_SECONDS:-60}
     depends_on: [postgres, redis, sflow-rt, jaeger]
 
   mcp-server:

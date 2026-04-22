@@ -25,6 +25,7 @@ from db.models import (
     BaselineSnapshot,
     FlowSummaryMinute,
     InterfaceUtilizationMinute,
+    QueueStatsMinute,
     Tenant,
 )
 
@@ -35,6 +36,13 @@ UTIL_THRESHOLD_HIGH = 80.0
 UTIL_THRESHOLD_CRITICAL = 95.0
 SPIKE_ZSCORE_THRESHOLD = 3.0
 SPIKE_LOOKBACK_MINUTES = 5
+
+# PR 23: RDMA / RoCE fabric stress detectors. Defaults are intentionally
+# loose so a single noisy frame doesn't page anyone — sustained activity
+# is the signal that matters.
+PFC_STORM_THRESHOLD_FRAMES = 1000
+ECN_SPIKE_THRESHOLD_PACKETS = 500
+RDMA_LOOKBACK_MINUTES = 5
 
 
 def util_severity(pct: float) -> str:
@@ -172,6 +180,117 @@ async def detect_spikes(
     return events
 
 
+async def detect_rdma_stress(
+    session: AsyncSession, tenant_id: str
+) -> list[AnomalyEvent]:
+    """Emit anomalies for PFC storms, ECN spikes, and lossless drops.
+
+    Three thresholds fire independently:
+      * pfc_storm  — total PFC pause frames (rx+tx) on a queue exceeds
+                     PFC_STORM_THRESHOLD_FRAMES in the lookback
+      * ecn_spike  — ECN-marked packet count exceeds the spike threshold
+      * lossless_drop — drops > 0 AND PFC pauses > 0 on the same queue
+                        (the DCQCN failure mode RDMA must not hit)
+    """
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(minutes=RDMA_LOOKBACK_MINUTES)
+
+    q = (
+        select(
+            QueueStatsMinute.device,
+            QueueStatsMinute.interface,
+            QueueStatsMinute.queue_id,
+            func.sum(QueueStatsMinute.pfc_pause_rx).label("pfc_rx"),
+            func.sum(QueueStatsMinute.pfc_pause_tx).label("pfc_tx"),
+            func.sum(QueueStatsMinute.ecn_marked_packets).label("ecn"),
+            func.sum(QueueStatsMinute.dropped_packets).label("drops"),
+        )
+        .where(QueueStatsMinute.tenant_id == tenant_id)
+        .where(QueueStatsMinute.ts_bucket >= since)
+        .group_by(
+            QueueStatsMinute.device,
+            QueueStatsMinute.interface,
+            QueueStatsMinute.queue_id,
+        )
+    )
+    rows = (await session.execute(q)).all()
+
+    events: list[AnomalyEvent] = []
+    for r in rows:
+        pfc = int((r.pfc_rx or 0) + (r.pfc_tx or 0))
+        ecn = int(r.ecn or 0)
+        drops = int(r.drops or 0)
+        scope = f"device:{r.device}/interface:{r.interface}/queue:{r.queue_id}"
+
+        if drops > 0 and pfc > 0:
+            events.append(
+                AnomalyEvent(
+                    tenant_id=tenant_id,
+                    ts=now,
+                    scope=scope,
+                    anomaly_type="lossless_drop",
+                    severity="critical",
+                    summary=(
+                        f"Lossless drop: queue {r.queue_id} on "
+                        f"{r.interface}@{r.device} has {drops} drops AND "
+                        f"{pfc} PFC pauses in last {RDMA_LOOKBACK_MINUTES} "
+                        "min — RDMA transport will retransmit and stall."
+                    ),
+                    metadata_json={
+                        "drops": drops,
+                        "pfc_total": pfc,
+                        "ecn_marks": ecn,
+                    },
+                )
+            )
+            continue
+
+        if pfc >= PFC_STORM_THRESHOLD_FRAMES:
+            events.append(
+                AnomalyEvent(
+                    tenant_id=tenant_id,
+                    ts=now,
+                    scope=scope,
+                    anomaly_type="pfc_storm",
+                    severity="high",
+                    summary=(
+                        f"PFC pause storm on queue {r.queue_id} "
+                        f"({r.interface}@{r.device}): {pfc} pause frames "
+                        f"in last {RDMA_LOOKBACK_MINUTES} min — sustained "
+                        "receiver-side congestion."
+                    ),
+                    metadata_json={
+                        "pfc_rx": int(r.pfc_rx or 0),
+                        "pfc_tx": int(r.pfc_tx or 0),
+                        "threshold": PFC_STORM_THRESHOLD_FRAMES,
+                    },
+                )
+            )
+
+        if ecn >= ECN_SPIKE_THRESHOLD_PACKETS:
+            events.append(
+                AnomalyEvent(
+                    tenant_id=tenant_id,
+                    ts=now,
+                    scope=scope,
+                    anomaly_type="ecn_spike",
+                    severity="medium",
+                    summary=(
+                        f"ECN marking spike on queue {r.queue_id} "
+                        f"({r.interface}@{r.device}): {ecn} marked packets "
+                        f"in last {RDMA_LOOKBACK_MINUTES} min — DCQCN is "
+                        "throttling senders."
+                    ),
+                    metadata_json={
+                        "ecn_marks": ecn,
+                        "threshold": ECN_SPIKE_THRESHOLD_PACKETS,
+                    },
+                )
+            )
+
+    return events
+
+
 async def _active_tenant_ids(session: AsyncSession) -> list[str]:
     q = select(Tenant.id).where(Tenant.is_active.is_(True))
     return [str(tid) for tid in (await session.execute(q)).scalars().all()]
@@ -187,9 +306,14 @@ async def run_anomaly_detection() -> int:
         for tid in tenant_ids:
             threshold_events = await detect_threshold_breaches(session, tid)
             spike_events = await detect_spikes(session, tid)
-            per_tenant[tid] = (len(threshold_events), len(spike_events))
+            rdma_events = await detect_rdma_stress(session, tid)
+            per_tenant[tid] = (
+                len(threshold_events),
+                len(spike_events) + len(rdma_events),
+            )
             all_events.extend(threshold_events)
             all_events.extend(spike_events)
+            all_events.extend(rdma_events)
         if all_events:
             session.add_all(all_events)
             await session.commit()
