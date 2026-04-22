@@ -1,3 +1,4 @@
+"""MCP tool: summarize_anomalies — LLM narrative over recent anomalies (PR 25)."""
 from app import mcp
 from client import get_telemetry
 from middleware.audit import audit_tool
@@ -5,21 +6,23 @@ from middleware.ratelimit import rate_limit
 
 
 @mcp.tool()
-@audit_tool("get_recent_anomalies")
-@rate_limit(max_calls=30, window_seconds=60)
-async def get_recent_anomalies(
+@audit_tool("summarize_anomalies")
+@rate_limit(max_calls=10, window_seconds=60)
+async def summarize_anomalies(
     scope: str = "global",
     severity_min: str = "medium",
     since_minutes: int = 30,
 ) -> dict:
-    """Return anomaly events detected recently for a scope.
+    """Short narrative over recent anomalies for a shift handoff.
 
-    Filters by minimum severity (low|medium|high|critical). Use this to
-    answer: 'Is something wrong right now?'
+    Collapses the last anomalies into a <=3-sentence summary grounded in
+    counts, severities, and types — nothing is invented beyond the stored
+    events. Pair with ``get_recent_anomalies`` when the operator wants the
+    raw list.
 
     Args:
         scope: 'global' or 'device:<hostname>' or 'interface:<dev>/<if>'.
-        severity_min: Minimum severity to include.
+        severity_min: Minimum severity to include (low|medium|high|critical).
         since_minutes: Lookback window (1-1440 minutes).
     """
     if severity_min not in {"low", "medium", "high", "critical"}:
@@ -27,7 +30,7 @@ async def get_recent_anomalies(
     if not 1 <= since_minutes <= 1440:
         return {"error": "since_minutes must be between 1 and 1440"}
     return await get_telemetry(
-        "/anomalies/recent",
+        "/anomalies/summary",
         params={
             "scope": scope,
             "severity_min": severity_min,

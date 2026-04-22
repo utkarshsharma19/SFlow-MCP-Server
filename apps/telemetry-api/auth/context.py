@@ -30,6 +30,9 @@ class TenantContext:
     tenant_id: str
     api_key_id: str
     role: str
+    # PR 27 — per-key scoping. ``tool_allowlist is None`` means unrestricted.
+    tool_allowlist: tuple[str, ...] | None = None
+    rate_limit_per_minute: int | None = None
 
     def has_role(self, min_role: str) -> bool:
         needed = ROLE_RANK.get(min_role)
@@ -37,6 +40,11 @@ class TenantContext:
         if needed is None or have is None:
             return False
         return have >= needed
+
+    def may_call_tool(self, tool_name: str) -> bool:
+        if self.tool_allowlist is None:
+            return True
+        return tool_name in self.tool_allowlist
 
 
 def get_tenant_context(request: Request) -> TenantContext:

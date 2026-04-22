@@ -10,10 +10,14 @@ MCP_SERVER_DIR = PROJECT_ROOT / "apps" / "mcp-server"
 
 EXPECTED_TOOLS = {
     "compare_traffic_windows",
+    "detect_fabric_imbalance",
     "explain_hot_link",
+    "get_device_state",
     "get_interface_utilization",
+    "get_rdma_health",
     "get_recent_anomalies",
     "get_top_talkers",
+    "summarize_anomalies",
     "summarize_protocol_mix",
 }
 

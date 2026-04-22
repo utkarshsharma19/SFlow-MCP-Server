@@ -13,7 +13,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -68,6 +68,7 @@ class APIKey(Base):
         nullable=False,
     )
     key_hash = Column(String(64), nullable=False, unique=True)
+    key_prefix = Column(String(8), nullable=True)       # first 8 chars for display
     role = Column(String(32), nullable=False)   # viewer|analyst|operator|tenant_admin
     name = Column(String(128), nullable=False)
     is_active = Column(Boolean, nullable=False, server_default=text("true"))
@@ -76,8 +77,19 @@ class APIKey(Base):
     )
     last_used_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Rotation + scoping (PR 27)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    rotated_from_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    tool_allowlist = Column(JSONB, nullable=True)       # NULL = any tool
+    rate_limit_per_minute = Column(Integer, nullable=True)  # NULL = use default
+
     __table_args__ = (
         Index("ix_api_keys_tenant", "tenant_id"),
+        Index("ix_api_keys_expires_at", "expires_at"),
     )
 
 
@@ -112,6 +124,42 @@ class AuditLog(Base):
 # ---------------------------------------------------------------------------
 # Per-source → tenant routing (PR 22)
 # ---------------------------------------------------------------------------
+
+class ECMPGroup(Base):
+    """Operator-defined ECMP member set on a device (PR 24).
+
+    Members is a JSONB array of interface name strings. The imbalance
+    detector reads this table first; absent any rows, it falls back to
+    grouping every UP interface on a device by speed.
+    """
+
+    __tablename__ = "ecmp_groups"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    device = Column(String(255), nullable=False)
+    group_name = Column(String(128), nullable=False)
+    members = Column(JSONB, nullable=False)
+    description = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "device", "group_name", name="uq_ecmp_group_per_device"
+        ),
+        Index("ix_ecmp_tenant_device", "tenant_id", "device"),
+    )
+
 
 class CollectorSource(Base):
     """Maps (source_kind, source_identifier) to the owning tenant.
@@ -162,13 +210,20 @@ class CollectorSource(Base):
 # ---------------------------------------------------------------------------
 
 class FlowSummaryMinute(Base):
-    """Minute-bucketed flow summaries. Sampling-corrected estimates."""
+    """Minute-bucketed flow summaries. Sampling-corrected estimates.
+
+    Declarative-partitioned by ``ts_bucket`` (monthly). The ORM PK includes
+    ``ts_bucket`` because Postgres requires the partition key in every
+    unique constraint on a partitioned table.
+    """
 
     __tablename__ = "flow_summary_minute"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id = Column(UUID(as_uuid=False), nullable=False)
-    ts_bucket = Column(DateTime(timezone=True), nullable=False, index=True)
+    ts_bucket = Column(
+        DateTime(timezone=True), primary_key=True, nullable=False, index=True
+    )
     device = Column(String(255), nullable=False)
     interface = Column(String(255), nullable=False)
     src_ip = Column(String(45), nullable=False)
@@ -182,15 +237,20 @@ class FlowSummaryMinute(Base):
         Index("ix_flow_tenant_ts", "tenant_id", "ts_bucket"),
         Index("ix_flow_device_ts", "device", "ts_bucket"),
         Index("ix_flow_src_dst_ts", "src_ip", "dst_ip", "ts_bucket"),
+        {"postgresql_partition_by": "RANGE (ts_bucket)"},
     )
 
 
 class InterfaceUtilizationMinute(Base):
+    """Interface utilization per minute. Partitioned monthly by ts_bucket."""
+
     __tablename__ = "interface_utilization_minute"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id = Column(UUID(as_uuid=False), nullable=False)
-    ts_bucket = Column(DateTime(timezone=True), nullable=False, index=True)
+    ts_bucket = Column(
+        DateTime(timezone=True), primary_key=True, nullable=False, index=True
+    )
     device = Column(String(255), nullable=False)
     interface = Column(String(255), nullable=False)
     in_bps = Column(BigInteger, nullable=False)
@@ -202,6 +262,7 @@ class InterfaceUtilizationMinute(Base):
     __table_args__ = (
         Index("ix_util_tenant_ts", "tenant_id", "ts_bucket"),
         Index("ix_util_device_if_ts", "device", "interface", "ts_bucket"),
+        {"postgresql_partition_by": "RANGE (ts_bucket)"},
     )
 
 
@@ -231,6 +292,17 @@ class BaselineSnapshot(Base):
 
 
 class AnomalyEvent(Base):
+    """A detected anomaly, deduped by ``fingerprint``.
+
+    Detectors compute a stable fingerprint over
+    ``(tenant_id, anomaly_type, scope, rounded-cause)`` and upsert: a
+    recurring condition bumps ``last_seen_at`` and ``occurrence_count``
+    instead of writing a new row each tick. Acknowledging or resolving an
+    event flips the lifecycle columns — once ``resolved_at`` is set, the
+    next recurrence opens a fresh row (enforced by the partial unique
+    index on open events).
+    """
+
     __tablename__ = "anomaly_events"
 
     id = Column(
@@ -246,8 +318,56 @@ class AnomalyEvent(Base):
     summary = Column(Text, nullable=False)
     metadata_json = Column(JSONB, nullable=True)
 
+    # Dedup + lifecycle (PR 26)
+    fingerprint = Column(String(64), nullable=True)
+    first_seen_at = Column(DateTime(timezone=True), nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    occurrence_count = Column(Integer, nullable=False, server_default=text("1"))
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    acknowledged_by_api_key_id = Column(UUID(as_uuid=False), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_by_api_key_id = Column(UUID(as_uuid=False), nullable=True)
+
     __table_args__ = (
         Index("ix_anomaly_tenant_ts", "tenant_id", "ts"),
+        Index("ix_anomaly_fingerprint_open", "tenant_id", "fingerprint"),
+    )
+
+
+class SourceFreshness(Base):
+    """Last-seen heartbeat per (tenant, source_kind, device).
+
+    Updated on every successful ingest tick. A silent collector — e.g. a
+    gNMI dialout that stopped publishing — is its own anomaly: the
+    freshness scanner turns missing heartbeats into ``anomaly_events`` of
+    type ``collector_silent``. Paired with the sampling_rate in flow rows
+    so the 'confidence_note' layer can downgrade when a feed drifts.
+    """
+
+    __tablename__ = "source_freshness"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    source_kind = Column(String(32), nullable=False)   # sflow|gnmi
+    device = Column(String(255), nullable=False)
+    last_ingest_ts = Column(DateTime(timezone=True), nullable=False)
+    last_sample_count = Column(Integer, nullable=False, server_default=text("0"))
+    status = Column(String(16), nullable=False, server_default=text("'fresh'"))  # fresh|stale|silent
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "source_kind", "device", name="uq_source_freshness"
+        ),
+        Index(
+            "ix_source_freshness_last_ingest",
+            "tenant_id",
+            "last_ingest_ts",
+        ),
     )
 
 
@@ -313,7 +433,7 @@ class QueueStatsMinute(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id = Column(UUID(as_uuid=False), nullable=False)
-    ts_bucket = Column(DateTime(timezone=True), nullable=False)
+    ts_bucket = Column(DateTime(timezone=True), primary_key=True, nullable=False)
     device = Column(String(255), nullable=False)
     interface = Column(String(255), nullable=False)
     queue_id = Column(Integer, nullable=False)
@@ -334,4 +454,112 @@ class QueueStatsMinute(Base):
             "queue_id",
             "ts_bucket",
         ),
+        {"postgresql_partition_by": "RANGE (ts_bucket)"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Encrypted secrets + MCP audit + quota (PR 27, PR 28)
+# ---------------------------------------------------------------------------
+
+class EncryptedSecret(Base):
+    """pgcrypto-backed secret store (gNMI passwords, webhook signing keys).
+
+    The ciphertext column never sees plaintext: the app binds
+    ``pgp_sym_encrypt(:pt, :key)`` and reads go through
+    ``pgp_sym_decrypt(ciphertext, :key)``. The key itself lives in app
+    memory (env or KMS sidecar), not the DB.
+    """
+
+    __tablename__ = "encrypted_secrets"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    secret_kind = Column(String(64), nullable=False)       # gnmi_password|webhook_secret|...
+    secret_ref = Column(String(255), nullable=False)       # stable handle (device name, etc.)
+    ciphertext = Column(BYTEA, nullable=False)             # pgp_sym_encrypt output
+    key_version = Column(Integer, nullable=False, server_default=text("1"))
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    rotated_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "secret_kind", "secret_ref", name="uq_encrypted_secret_ref"
+        ),
+        Index("ix_encrypted_secrets_tenant", "tenant_id"),
+    )
+
+
+class ToolCallAudit(Base):
+    """Append-only log of MCP tool invocations (PR 28).
+
+    Distinct from ``audit_log`` because that tracks HTTP access; this
+    tracks what the *LLM* called and with what arguments. Regulators and
+    enterprise security teams ask for this every time.
+    """
+
+    __tablename__ = "tool_call_audit"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    ts = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    api_key_id = Column(UUID(as_uuid=False), nullable=True)
+    tool_name = Column(String(128), nullable=False)
+    args_hash = Column(String(64), nullable=False)    # sha256(json.dumps(args, sort_keys))
+    args_truncated = Column(JSONB, nullable=True)     # first N bytes, for debugging
+    response_bytes = Column(Integer, nullable=True)
+    confidence_band = Column(String(16), nullable=True)  # exact|sampled|degraded
+    status = Column(String(16), nullable=False)       # ok|error|quota_exceeded|forbidden
+    duration_ms = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_tool_audit_tenant_ts", "tenant_id", "ts"),
+        Index("ix_tool_audit_tool_ts", "tool_name", "ts"),
+    )
+
+
+class TenantQuota(Base):
+    """Per-tenant per-tool usage + limits (PR 28).
+
+    Counters roll up by ``period_start`` (day-anchored). The MCP
+    middleware increments counters and rejects with 429 when
+    ``calls_this_period >= call_limit``. Billing or downgrade tooling
+    consumes the same rows out-of-band.
+    """
+
+    __tablename__ = "tenant_quotas"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tool_name = Column(String(128), nullable=False)  # '*' for aggregate
+    period_start = Column(DateTime(timezone=True), nullable=False)
+    calls_this_period = Column(BigInteger, nullable=False, server_default=text("0"))
+    bytes_out_this_period = Column(BigInteger, nullable=False, server_default=text("0"))
+    call_limit = Column(BigInteger, nullable=True)          # NULL = unlimited
+    byte_limit = Column(BigInteger, nullable=True)          # NULL = unlimited
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "tool_name", "period_start", name="uq_tenant_quota_period"
+        ),
+        Index("ix_tenant_quotas_tenant", "tenant_id"),
     )

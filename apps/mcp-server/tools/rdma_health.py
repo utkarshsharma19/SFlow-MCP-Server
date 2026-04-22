@@ -1,10 +1,12 @@
 """MCP tool: get_rdma_health — RoCE/RDMA fabric assessment."""
 from app import mcp
 from client import get_telemetry
+from middleware.audit import audit_tool
 from middleware.ratelimit import rate_limit
 
 
 @mcp.tool()
+@audit_tool("get_rdma_health")
 @rate_limit(max_calls=20, window_seconds=60)
 async def get_rdma_health(
     device: str | None = None,

@@ -6,7 +6,9 @@ once — never stored — so the operator is responsible for delivering them
 securely.
 
 PR 22 adds the source-mapping subcommands so the ingestion loops can
-route per-device telemetry to the right tenant.
+route per-device telemetry to the right tenant. PR 24 adds
+`define-ecmp-group` so the imbalance detector can use operator-curated
+member sets instead of the speed-based heuristic.
 
 Usage:
     python -m scripts.seed create-tenant --slug acme --name "Acme Corp"
@@ -14,6 +16,10 @@ Usage:
     python -m scripts.seed map-source --kind sflow --identifier 10.0.1.5 --tenant-slug acme
     python -m scripts.seed map-source --kind gnmi --identifier spine1 --tenant-slug acme
     python -m scripts.seed list-sources
+    python -m scripts.seed define-ecmp-group --tenant-slug acme \
+        --device leaf1 --group-name uplinks-to-spines \
+        --members Ethernet49,Ethernet50,Ethernet51,Ethernet52
+    python -m scripts.seed list-ecmp-groups
 """
 from __future__ import annotations
 
@@ -26,7 +32,7 @@ from sqlalchemy import select
 
 from auth.context import VALID_ROLES, hash_api_key
 from db import AsyncSessionLocal
-from db.models import APIKey, CollectorSource, Tenant
+from db.models import APIKey, CollectorSource, ECMPGroup, Tenant
 
 VALID_SOURCE_KINDS = {"sflow", "gnmi"}
 

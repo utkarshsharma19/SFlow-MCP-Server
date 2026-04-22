@@ -1,10 +1,12 @@
 """MCP tool: get_device_state — gNMI/OpenConfig snapshot per device."""
 from app import mcp
 from client import get_telemetry
+from middleware.audit import audit_tool
 from middleware.ratelimit import rate_limit
 
 
 @mcp.tool()
+@audit_tool("get_device_state")
 @rate_limit(max_calls=30, window_seconds=60)
 async def get_device_state(device: str, window_minutes: int = 15) -> dict:
     """Return the latest interface, BGP, and queue state for a device.
