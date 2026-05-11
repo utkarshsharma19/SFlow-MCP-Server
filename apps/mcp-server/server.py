@@ -5,10 +5,12 @@ in apps/mcp-server/tools/. Importing the module is enough to register.
 """
 import argparse
 import logging
+import os
 
 from app import mcp
+from shared.logging import configure_logging
 
-logging.basicConfig(level="INFO")
+configure_logging("flowmind-mcp-server", level=os.getenv("LOG_LEVEL", "INFO"))
 
 # Side-effect imports: each module registers its tool via @mcp.tool()
 # or resource via @mcp.resource()
