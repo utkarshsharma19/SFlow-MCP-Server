@@ -1,0 +1,45 @@
+{
+  "contract_schema_version": 1,
+  "tools": {
+    "compare_traffic_windows": {
+      "version": "1.0",
+      "signature": "(scope: str = 'global', baseline_start: str = '', baseline_end: str = '', current_start: str = '', current_end: str = '') -> dict"
+    },
+    "detect_fabric_imbalance": {
+      "version": "1.0",
+      "signature": "(device: str | None = None, window_minutes: int = 15) -> dict"
+    },
+    "explain_hot_link": {
+      "version": "1.0",
+      "signature": "(device: str, interface: str, window_minutes: int = 15) -> dict"
+    },
+    "get_device_state": {
+      "version": "1.0",
+      "signature": "(device: str, window_minutes: int = 15) -> dict"
+    },
+    "get_interface_utilization": {
+      "version": "1.0",
+      "signature": "(device: str, interface: str, window_minutes: int = 15) -> dict"
+    },
+    "get_rdma_health": {
+      "version": "1.0",
+      "signature": "(device: str | None = None, window_minutes: int = 15) -> dict"
+    },
+    "get_recent_anomalies": {
+      "version": "1.0",
+      "signature": "(scope: str = 'global', severity_min: str = 'medium', since_minutes: int = 30) -> dict"
+    },
+    "get_top_talkers": {
+      "version": "1.0",
+      "signature": "(window_minutes: int = 15, scope: str = 'global', limit: int = 10) -> dict"
+    },
+    "summarize_anomalies": {
+      "version": "1.0",
+      "signature": "(scope: str = 'global', severity_min: str = 'medium', since_minutes: int = 30) -> dict"
+    },
+    "summarize_protocol_mix": {
+      "version": "1.0",
+      "signature": "(scope: str = 'global', window_minutes: int = 15) -> dict"
+    }
+  }
+}
