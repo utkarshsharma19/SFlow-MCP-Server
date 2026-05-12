@@ -39,6 +39,7 @@ from db.models import (
     DeviceIntent,
     ECMPGroup,
     Tenant,
+    WebhookSubscription,
 )
 
 VALID_SOURCE_KINDS = {"sflow", "gnmi"}
@@ -211,6 +212,26 @@ def main() -> None:
     )
     p_bgp_intent.add_argument("--source", required=False, default="manual")
 
+    p_webhook = sub.add_parser(
+        "create-webhook",
+        help="register a critical-anomaly webhook subscription",
+    )
+    p_webhook.add_argument("--tenant-slug", required=True)
+    p_webhook.add_argument("--target-url", required=True)
+    p_webhook.add_argument(
+        "--severity-min",
+        required=False,
+        default="critical",
+        help="low|medium|high|critical",
+    )
+    p_webhook.add_argument("--description", required=False, default=None)
+    p_webhook.add_argument(
+        "--secret",
+        required=False,
+        default=None,
+        help="HMAC secret. Auto-generated if omitted.",
+    )
+
     args = parser.parse_args()
     if args.cmd == "create-tenant":
         asyncio.run(_create_tenant(args.slug, args.name))
@@ -246,6 +267,71 @@ def main() -> None:
                 session_state=args.session_state,
                 source=args.source,
             )
+        )
+    elif args.cmd == "create-webhook":
+        asyncio.run(
+            _create_webhook(
+                tenant_slug=args.tenant_slug,
+                target_url=args.target_url,
+                severity_min=args.severity_min,
+                description=args.description,
+                secret_plaintext=args.secret,
+            )
+        )
+
+
+async def _create_webhook(
+    *,
+    tenant_slug: str,
+    target_url: str,
+    severity_min: str,
+    description: str | None,
+    secret_plaintext: str | None,
+) -> None:
+    from services.crypto import store_secret
+    from services.rls_session import set_tenant
+
+    if severity_min not in {"low", "medium", "high", "critical"}:
+        print(
+            "error: severity_min must be low|medium|high|critical",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    plaintext = secret_plaintext or f"whk_{secrets.token_urlsafe(32)}"
+    secret_ref = f"webhook-{secrets.token_hex(8)}"
+
+    async with AsyncSessionLocal() as session:
+        tenant = (
+            await session.execute(select(Tenant).where(Tenant.slug == tenant_slug))
+        ).scalar_one_or_none()
+        if tenant is None:
+            print(f"error: tenant '{tenant_slug}' not found", file=sys.stderr)
+            sys.exit(2)
+
+        await set_tenant(session, str(tenant.id))
+
+        await store_secret(
+            session,
+            tenant_id=str(tenant.id),
+            kind="webhook_secret",
+            ref=secret_ref,
+            plaintext=plaintext,
+        )
+        sub = WebhookSubscription(
+            tenant_id=tenant.id,
+            target_url=target_url,
+            secret_ref=secret_ref,
+            severity_min=severity_min,
+            description=description,
+        )
+        session.add(sub)
+        await session.commit()
+        await session.refresh(sub)
+        print(f"created webhook subscription id={sub.id} secret_ref={secret_ref}")
+        print(f"SECRET: {plaintext}")
+        print(
+            "(verify deliveries with: SELECT signature header sha256=HMAC-SHA256(secret, body))"
         )
 
 

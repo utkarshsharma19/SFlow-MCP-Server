@@ -27,6 +27,7 @@ from services.gnmi_ingest import gnmi_ingestion_loop
 from services.ingest import ingestion_loop
 from services.partition_maintenance import partition_maintenance_loop
 from services.source_freshness_loop import source_freshness_loop
+from services.webhook_dispatcher import webhook_dispatcher_loop
 
 configure_logging("flowmind-telemetry-api", level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger(__name__)
@@ -42,9 +43,10 @@ async def lifespan(app: FastAPI):
     anomaly_task = asyncio.create_task(anomaly_loop())
     partition_task = asyncio.create_task(partition_maintenance_loop())
     freshness_task = asyncio.create_task(source_freshness_loop())
+    webhook_task = asyncio.create_task(webhook_dispatcher_loop())
     log.info(
-        "ingestion, baseline, anomaly, partition-maintenance, and "
-        "source-freshness loops started"
+        "ingestion, baseline, anomaly, partition-maintenance, "
+        "source-freshness, and webhook-dispatcher loops started"
     )
     try:
         yield
@@ -56,6 +58,7 @@ async def lifespan(app: FastAPI):
             anomaly_task,
             partition_task,
             freshness_task,
+            webhook_task,
         ):
             t.cancel()
         await sflow.close()

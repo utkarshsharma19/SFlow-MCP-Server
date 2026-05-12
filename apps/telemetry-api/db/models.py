@@ -623,6 +623,87 @@ class BGPIntent(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Webhook subscriptions for critical-anomaly push (PR 30)
+# ---------------------------------------------------------------------------
+
+class WebhookSubscription(Base):
+    """Per-tenant URL that receives signed anomaly notifications.
+
+    ``secret_ref`` points at a row in ``encrypted_secrets`` with
+    ``secret_kind='webhook_secret'`` — the HMAC key never sits next to
+    the URL it signs for, so a DB dump of this table alone leaks nothing
+    a recipient can forge.
+    """
+
+    __tablename__ = "webhook_subscriptions"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_url = Column(String(2048), nullable=False)
+    secret_ref = Column(String(255), nullable=False)
+    severity_min = Column(
+        String(16), nullable=False, server_default=text("'critical'")
+    )
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    description = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_success_at = Column(DateTime(timezone=True), nullable=True)
+    last_failure_at = Column(DateTime(timezone=True), nullable=True)
+    consecutive_failures = Column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
+    __table_args__ = (
+        Index("ix_webhook_sub_tenant_active", "tenant_id", "is_active"),
+    )
+
+
+class WebhookDelivery(Base):
+    """Append-only delivery attempts; idempotency-keyed on (subscription, anomaly).
+
+    The unique constraint is intentional — the dispatcher decides whether
+    a row is "new enough to deliver" by checking the absence of a row
+    here. That means re-running the dispatcher on the same anomaly is
+    a no-op rather than a duplicate page.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    subscription_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("webhook_subscriptions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    anomaly_id = Column(UUID(as_uuid=True), nullable=False)
+    ts = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    status_code = Column(Integer, nullable=True)
+    status = Column(String(16), nullable=False)   # ok|failed|skipped
+    error = Column(String(512), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id", "anomaly_id", name="uq_webhook_delivery_per_anomaly"
+        ),
+        Index("ix_webhook_deliveries_tenant_ts", "tenant_id", "ts"),
+    )
+
+
 class TenantQuota(Base):
     """Per-tenant per-tool usage + limits (PR 28).
 
