@@ -530,6 +530,99 @@ class ToolCallAudit(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Intent cache for diff_config_intent_vs_state (PR 29)
+# ---------------------------------------------------------------------------
+
+class DeviceIntent(Base):
+    """Per-interface expected state, populated by an external orchestrator.
+
+    NULL columns mean "no opinion"; the diff service treats those as
+    matching automatically. The ``source`` column tracks whether intent
+    came from Verity, a YAML import, or a manual `scripts/seed.py`
+    invocation — useful when reconciling drift between two intent
+    systems.
+    """
+
+    __tablename__ = "device_intent"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    device = Column(String(255), nullable=False)
+    interface = Column(String(255), nullable=False)
+    expected_admin_status = Column(String(16), nullable=True)
+    expected_oper_status = Column(String(16), nullable=True)
+    expected_speed_bps = Column(BigInteger, nullable=True)
+    expected_mtu = Column(Integer, nullable=True)
+    expected_description = Column(String(255), nullable=True)
+    source = Column(String(32), nullable=False, server_default=text("'manual'"))
+    notes = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "device", "interface", name="uq_device_intent_iface"
+        ),
+        Index("ix_device_intent_tenant_device", "tenant_id", "device"),
+    )
+
+
+class BGPIntent(Base):
+    """Per-peer expected BGP state.
+
+    Distinct from ``device_intent`` because BGP peers aren't 1:1 with
+    interfaces (a peer is keyed on neighbor address, not the local link
+    it rides). The diff service flags both directions: peers in intent
+    that never came up, and peers in state that intent doesn't know
+    about (the latter often signals a misconfigured neighbor).
+    """
+
+    __tablename__ = "bgp_intent"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    device = Column(String(255), nullable=False)
+    peer_address = Column(String(64), nullable=False)
+    expected_peer_as = Column(Integer, nullable=True)
+    expected_session_state = Column(String(32), nullable=True)
+    source = Column(String(32), nullable=False, server_default=text("'manual'"))
+    notes = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "device", "peer_address", name="uq_bgp_intent_peer"
+        ),
+        Index("ix_bgp_intent_tenant_device", "tenant_id", "device"),
+    )
+
+
 class TenantQuota(Base):
     """Per-tenant per-tool usage + limits (PR 28).
 

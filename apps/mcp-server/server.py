@@ -22,6 +22,7 @@ from tools import (  # noqa: E402, F401
     explain_hot_link,
     fabric_health,
     fabric_imbalance,
+    intent_diff,
     link_utilization,
     protocol_mix,
     rdma_health,

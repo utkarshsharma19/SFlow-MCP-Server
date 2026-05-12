@@ -16,6 +16,7 @@ from routers import tool_audit as tool_audit_router
 from routers import devices as devices_router
 from routers import fabric as fabric_router
 from routers import flows as flows_router
+from routers import intent as intent_router
 from routers import interfaces as interfaces_router
 from routers import rdma as rdma_router
 from routers import topology as topology_router
@@ -73,6 +74,7 @@ app.include_router(topology_router.router)
 app.include_router(devices_router.router)
 app.include_router(rdma_router.router)
 app.include_router(fabric_router.router)
+app.include_router(intent_router.router)
 app.include_router(admin_router.router)
 app.include_router(tool_audit_router.router)
 
