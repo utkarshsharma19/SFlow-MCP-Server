@@ -3,10 +3,13 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from collectors.gnmi_client import GNMIClient
 from collectors.sflow_rt_client import SFlowRTClient
+from db import AsyncSessionLocal
+from services.metrics import render_prometheus
+from services.rls_session import bypass_rls
 from middleware.auth import APIKeyMiddleware
 from otel import setup_telemetry
 from shared.logging import configure_logging
@@ -85,3 +88,18 @@ app.include_router(tool_audit_router.router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics_endpoint() -> Response:
+    """Prometheus exposition. Reads cross-tenant by design (operator view).
+
+    Mounted directly on the app (not behind APIKeyMiddleware) because
+    Prom scrapes via in-cluster scrape configs that won't carry an
+    API key. The middleware's EXEMPT_PATHS list includes ``/metrics``.
+    Body is text/plain per Prometheus exposition spec.
+    """
+    async with AsyncSessionLocal() as session:
+        async with bypass_rls(session):
+            body = await render_prometheus(session)
+    return Response(content=body, media_type="text/plain; version=0.0.4")
