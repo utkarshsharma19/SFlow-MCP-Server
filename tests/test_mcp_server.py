@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "get_link_history",
     "get_rdma_health",
     "get_recent_anomalies",
+    "get_top_offenders",
     "get_top_talkers",
     "summarize_anomalies",
     "summarize_protocol_mix",

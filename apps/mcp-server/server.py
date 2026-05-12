@@ -31,6 +31,7 @@ from tools import (  # noqa: E402, F401
     protocol_mix,
     rdma_health,
     recent_anomalies,
+    top_offenders,
     top_talkers,
 )
 
