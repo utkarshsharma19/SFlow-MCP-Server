@@ -422,6 +422,54 @@ class BGPSessionMinute(Base):
     )
 
 
+class LLDPNeighbor(Base):
+    """One row per (device, interface, neighbor_chassis_id).
+
+    Not time-series — LLDP describes *the current* adjacency on a port,
+    not a history of it. We refresh ``last_seen_at`` on every gNMI poll
+    so the topology service can age out a missing neighbor without
+    losing the historical first_seen_at.
+    """
+
+    __tablename__ = "lldp_neighbors"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    device = Column(String(255), nullable=False)
+    interface = Column(String(255), nullable=False)
+    neighbor_chassis_id = Column(String(128), nullable=False)
+    neighbor_system_name = Column(String(255), nullable=True)
+    neighbor_port_id = Column(String(255), nullable=True)
+    neighbor_port_description = Column(String(255), nullable=True)
+    neighbor_management_address = Column(String(64), nullable=True)
+    first_seen_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "device",
+            "interface",
+            "neighbor_chassis_id",
+            name="uq_lldp_neighbor",
+        ),
+        Index("ix_lldp_tenant_device", "tenant_id", "device"),
+        Index(
+            "ix_lldp_tenant_neighbor_name",
+            "tenant_id",
+            "neighbor_system_name",
+        ),
+    )
+
+
 class QueueStatsMinute(Base):
     """qos/interfaces/.../queues/queue/state — buffer + PFC + ECN telemetry.
 
@@ -530,6 +578,180 @@ class ToolCallAudit(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Intent cache for diff_config_intent_vs_state (PR 29)
+# ---------------------------------------------------------------------------
+
+class DeviceIntent(Base):
+    """Per-interface expected state, populated by an external orchestrator.
+
+    NULL columns mean "no opinion"; the diff service treats those as
+    matching automatically. The ``source`` column tracks whether intent
+    came from Verity, a YAML import, or a manual `scripts/seed.py`
+    invocation — useful when reconciling drift between two intent
+    systems.
+    """
+
+    __tablename__ = "device_intent"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    device = Column(String(255), nullable=False)
+    interface = Column(String(255), nullable=False)
+    expected_admin_status = Column(String(16), nullable=True)
+    expected_oper_status = Column(String(16), nullable=True)
+    expected_speed_bps = Column(BigInteger, nullable=True)
+    expected_mtu = Column(Integer, nullable=True)
+    expected_description = Column(String(255), nullable=True)
+    source = Column(String(32), nullable=False, server_default=text("'manual'"))
+    notes = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "device", "interface", name="uq_device_intent_iface"
+        ),
+        Index("ix_device_intent_tenant_device", "tenant_id", "device"),
+    )
+
+
+class BGPIntent(Base):
+    """Per-peer expected BGP state.
+
+    Distinct from ``device_intent`` because BGP peers aren't 1:1 with
+    interfaces (a peer is keyed on neighbor address, not the local link
+    it rides). The diff service flags both directions: peers in intent
+    that never came up, and peers in state that intent doesn't know
+    about (the latter often signals a misconfigured neighbor).
+    """
+
+    __tablename__ = "bgp_intent"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    device = Column(String(255), nullable=False)
+    peer_address = Column(String(64), nullable=False)
+    expected_peer_as = Column(Integer, nullable=True)
+    expected_session_state = Column(String(32), nullable=True)
+    source = Column(String(32), nullable=False, server_default=text("'manual'"))
+    notes = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "device", "peer_address", name="uq_bgp_intent_peer"
+        ),
+        Index("ix_bgp_intent_tenant_device", "tenant_id", "device"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Webhook subscriptions for critical-anomaly push (PR 30)
+# ---------------------------------------------------------------------------
+
+class WebhookSubscription(Base):
+    """Per-tenant URL that receives signed anomaly notifications.
+
+    ``secret_ref`` points at a row in ``encrypted_secrets`` with
+    ``secret_kind='webhook_secret'`` — the HMAC key never sits next to
+    the URL it signs for, so a DB dump of this table alone leaks nothing
+    a recipient can forge.
+    """
+
+    __tablename__ = "webhook_subscriptions"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_url = Column(String(2048), nullable=False)
+    secret_ref = Column(String(255), nullable=False)
+    severity_min = Column(
+        String(16), nullable=False, server_default=text("'critical'")
+    )
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    description = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_success_at = Column(DateTime(timezone=True), nullable=True)
+    last_failure_at = Column(DateTime(timezone=True), nullable=True)
+    consecutive_failures = Column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
+    __table_args__ = (
+        Index("ix_webhook_sub_tenant_active", "tenant_id", "is_active"),
+    )
+
+
+class WebhookDelivery(Base):
+    """Append-only delivery attempts; idempotency-keyed on (subscription, anomaly).
+
+    The unique constraint is intentional — the dispatcher decides whether
+    a row is "new enough to deliver" by checking the absence of a row
+    here. That means re-running the dispatcher on the same anomaly is
+    a no-op rather than a duplicate page.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    subscription_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("webhook_subscriptions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    anomaly_id = Column(UUID(as_uuid=True), nullable=False)
+    ts = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    status_code = Column(Integer, nullable=True)
+    status = Column(String(16), nullable=False)   # ok|failed|skipped
+    error = Column(String(512), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id", "anomaly_id", name="uq_webhook_delivery_per_anomaly"
+        ),
+        Index("ix_webhook_deliveries_tenant_ts", "tenant_id", "ts"),
+    )
+
+
 class TenantQuota(Base):
     """Per-tenant per-tool usage + limits (PR 28).
 
@@ -551,8 +773,12 @@ class TenantQuota(Base):
     period_start = Column(DateTime(timezone=True), nullable=False)
     calls_this_period = Column(BigInteger, nullable=False, server_default=text("0"))
     bytes_out_this_period = Column(BigInteger, nullable=False, server_default=text("0"))
+    llm_tokens_this_period = Column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
     call_limit = Column(BigInteger, nullable=True)          # NULL = unlimited
     byte_limit = Column(BigInteger, nullable=True)          # NULL = unlimited
+    token_limit = Column(BigInteger, nullable=True)         # NULL = unlimited
     updated_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

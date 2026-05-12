@@ -9,13 +9,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MCP_SERVER_DIR = PROJECT_ROOT / "apps" / "mcp-server"
 
 EXPECTED_TOOLS = {
+    "acknowledge_anomaly",
     "compare_traffic_windows",
     "detect_fabric_imbalance",
+    "diff_config_intent_vs_state",
     "explain_hot_link",
+    "find_path",
+    "get_device_neighbors",
     "get_device_state",
+    "get_fabric_health",
     "get_interface_utilization",
+    "get_link_history",
     "get_rdma_health",
     "get_recent_anomalies",
+    "get_top_offenders",
     "get_top_talkers",
     "summarize_anomalies",
     "summarize_protocol_mix",
@@ -24,6 +31,7 @@ EXPECTED_TOOLS = {
 EXPECTED_RESOURCES = {
     "inventory://devices",
     "inventory://interfaces",
+    "inventory://gnmi-sources",
 }
 
 

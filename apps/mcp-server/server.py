@@ -16,15 +16,22 @@ configure_logging("flowmind-mcp-server", level=os.getenv("LOG_LEVEL", "INFO"))
 # or resource via @mcp.resource()
 from resources import inventory  # noqa: E402, F401
 from tools import (  # noqa: E402, F401
+    acknowledge_anomaly,
     anomaly_summary,
     compare_windows,
+    device_neighbors,
     device_state,
     explain_hot_link,
+    fabric_health,
     fabric_imbalance,
+    find_path,
+    intent_diff,
+    link_history,
     link_utilization,
     protocol_mix,
     rdma_health,
     recent_anomalies,
+    top_offenders,
     top_talkers,
 )
 
