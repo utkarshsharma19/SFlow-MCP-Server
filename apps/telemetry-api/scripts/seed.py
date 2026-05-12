@@ -42,7 +42,7 @@ from db.models import (
     WebhookSubscription,
 )
 
-VALID_SOURCE_KINDS = {"sflow", "gnmi"}
+VALID_SOURCE_KINDS = {"sflow", "gnmi", "verity"}
 
 
 async def _create_tenant(slug: str, name: str) -> None:
