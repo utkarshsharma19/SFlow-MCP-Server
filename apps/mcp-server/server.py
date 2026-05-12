@@ -20,6 +20,7 @@ from tools import (  # noqa: E402, F401
     compare_windows,
     device_state,
     explain_hot_link,
+    fabric_health,
     fabric_imbalance,
     link_utilization,
     protocol_mix,

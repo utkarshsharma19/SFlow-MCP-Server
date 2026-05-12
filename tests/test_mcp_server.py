@@ -13,6 +13,7 @@ EXPECTED_TOOLS = {
     "detect_fabric_imbalance",
     "explain_hot_link",
     "get_device_state",
+    "get_fabric_health",
     "get_interface_utilization",
     "get_rdma_health",
     "get_recent_anomalies",
@@ -24,6 +25,7 @@ EXPECTED_TOOLS = {
 EXPECTED_RESOURCES = {
     "inventory://devices",
     "inventory://interfaces",
+    "inventory://gnmi-sources",
 }
 
 
