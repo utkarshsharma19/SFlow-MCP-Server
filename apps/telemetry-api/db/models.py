@@ -773,8 +773,12 @@ class TenantQuota(Base):
     period_start = Column(DateTime(timezone=True), nullable=False)
     calls_this_period = Column(BigInteger, nullable=False, server_default=text("0"))
     bytes_out_this_period = Column(BigInteger, nullable=False, server_default=text("0"))
+    llm_tokens_this_period = Column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
     call_limit = Column(BigInteger, nullable=True)          # NULL = unlimited
     byte_limit = Column(BigInteger, nullable=True)          # NULL = unlimited
+    token_limit = Column(BigInteger, nullable=True)         # NULL = unlimited
     updated_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
