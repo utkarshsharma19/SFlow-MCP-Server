@@ -23,6 +23,7 @@ from tools import (  # noqa: E402, F401
     explain_hot_link,
     fabric_health,
     fabric_imbalance,
+    find_path,
     intent_diff,
     link_history,
     link_utilization,
