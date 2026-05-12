@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MCP_SERVER_DIR = PROJECT_ROOT / "apps" / "mcp-server"
 
 EXPECTED_TOOLS = {
+    "acknowledge_anomaly",
     "compare_traffic_windows",
     "detect_fabric_imbalance",
     "diff_config_intent_vs_state",
