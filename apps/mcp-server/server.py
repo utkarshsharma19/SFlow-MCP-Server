@@ -19,6 +19,7 @@ from tools import (  # noqa: E402, F401
     acknowledge_anomaly,
     anomaly_summary,
     compare_windows,
+    device_neighbors,
     device_state,
     explain_hot_link,
     fabric_health,

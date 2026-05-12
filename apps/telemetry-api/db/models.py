@@ -422,6 +422,54 @@ class BGPSessionMinute(Base):
     )
 
 
+class LLDPNeighbor(Base):
+    """One row per (device, interface, neighbor_chassis_id).
+
+    Not time-series — LLDP describes *the current* adjacency on a port,
+    not a history of it. We refresh ``last_seen_at`` on every gNMI poll
+    so the topology service can age out a missing neighbor without
+    losing the historical first_seen_at.
+    """
+
+    __tablename__ = "lldp_neighbors"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id = Column(UUID(as_uuid=False), nullable=False)
+    device = Column(String(255), nullable=False)
+    interface = Column(String(255), nullable=False)
+    neighbor_chassis_id = Column(String(128), nullable=False)
+    neighbor_system_name = Column(String(255), nullable=True)
+    neighbor_port_id = Column(String(255), nullable=True)
+    neighbor_port_description = Column(String(255), nullable=True)
+    neighbor_management_address = Column(String(64), nullable=True)
+    first_seen_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "device",
+            "interface",
+            "neighbor_chassis_id",
+            name="uq_lldp_neighbor",
+        ),
+        Index("ix_lldp_tenant_device", "tenant_id", "device"),
+        Index(
+            "ix_lldp_tenant_neighbor_name",
+            "tenant_id",
+            "neighbor_system_name",
+        ),
+    )
+
+
 class QueueStatsMinute(Base):
     """qos/interfaces/.../queues/queue/state — buffer + PFC + ECN telemetry.
 

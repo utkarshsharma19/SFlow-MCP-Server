@@ -15,6 +15,7 @@ EXPECTED_TOOLS = {
     "diff_config_intent_vs_state",
     "explain_hot_link",
     "find_path",
+    "get_device_neighbors",
     "get_device_state",
     "get_fabric_health",
     "get_interface_utilization",
