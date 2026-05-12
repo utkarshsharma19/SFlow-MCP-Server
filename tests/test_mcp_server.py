@@ -17,6 +17,7 @@ EXPECTED_TOOLS = {
     "get_device_state",
     "get_fabric_health",
     "get_interface_utilization",
+    "get_link_history",
     "get_rdma_health",
     "get_recent_anomalies",
     "get_top_talkers",

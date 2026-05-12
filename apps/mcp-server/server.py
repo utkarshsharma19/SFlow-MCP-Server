@@ -24,6 +24,7 @@ from tools import (  # noqa: E402, F401
     fabric_health,
     fabric_imbalance,
     intent_diff,
+    link_history,
     link_utilization,
     protocol_mix,
     rdma_health,
