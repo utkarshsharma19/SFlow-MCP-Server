@@ -1,4 +1,4 @@
-w"""tenancy + security hardening — RLS, API key rotation, encryption at rest
+"""tenancy + security hardening — RLS, API key rotation, encryption at rest
 
 Revision ID: 0008
 Revises: 0007

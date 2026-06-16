@@ -93,22 +93,33 @@ def test_top_talkers_filters_by_tenant(monkeypatch):
     assert "tenant_id" in captured["sql"]
 
 
+class _EmptyResult:
+    """SQLAlchemy 2.x Result stand-in covering the access patterns
+    our services exercise (``.all()``, ``.scalars().all()``,
+    ``.scalar()``, ``.scalar_one_or_none()``)."""
+
+    def all(self):
+        return []
+
+    def scalar(self):
+        return None
+
+    def scalar_one_or_none(self):
+        return None
+
+    def scalars(self):
+        return self
+
+
 def test_interface_utilization_filters_by_tenant():
     from services import interfaces
 
     captured = {}
 
-    class FakeResult:
-        def all(self):
-            return []
-
-        def scalar_one_or_none(self):
-            return None
-
     class FakeSession:
         async def execute(self, query):
             captured["sql"] = str(query)
-            return FakeResult()
+            return _EmptyResult()
 
     asyncio.run(
         interfaces.get_interface_utilization(
@@ -127,14 +138,10 @@ def test_anomalies_recent_filters_by_tenant():
 
     captured = {}
 
-    class FakeResult:
-        def all(self):
-            return []
-
     class FakeSession:
         async def execute(self, query):
             captured["sql"] = str(query)
-            return FakeResult()
+            return _EmptyResult()
 
     asyncio.run(
         anomalies_query.get_recent_anomalies(

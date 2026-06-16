@@ -190,11 +190,33 @@ def upgrade() -> None:
     # Copy any pre-existing rows into the partitioned tables. The partition
     # for the current month was just created above; older rows fall back to
     # the previous-month partition (also created).
+    #
+    # Use a named column list because migration 0003 appended ``tenant_id``
+    # to the *end* of these tables, so the post-0003 column order differs
+    # from the canonical order defined in PARTITIONED_TABLES. SELECT * would
+    # produce a positional mismatch (tenant_id::uuid vs ts_bucket::timestamptz).
+    NAMED_INSERT_COLUMNS = {
+        "flow_summary_minute": (
+            "id, tenant_id, ts_bucket, device, interface, "
+            "src_ip, dst_ip, protocol, bytes_estimated, "
+            "packets_estimated, sampling_rate"
+        ),
+        "interface_utilization_minute": (
+            "id, tenant_id, ts_bucket, device, interface, "
+            "in_bps, out_bps, in_util_pct, out_util_pct, error_count"
+        ),
+        "queue_stats_minute": (
+            "id, tenant_id, ts_bucket, device, interface, queue_id, "
+            "traffic_class, max_depth_bytes, avg_depth_bytes, "
+            "pfc_pause_rx, pfc_pause_tx, ecn_marked_packets, dropped_packets"
+        ),
+    }
     for table in PARTITIONED_TABLES:
+        cols = NAMED_INSERT_COLUMNS[table]
         op.execute(
             f"""
-            INSERT INTO {table}
-            SELECT * FROM {table}_old
+            INSERT INTO {table} ({cols})
+            SELECT {cols} FROM {table}_old
             WHERE ts_bucket >= date_trunc('month', now() - interval '1 month')
             """
         )
@@ -343,9 +365,16 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS drop_partitions_older_than(text, interval)")
     op.execute("DROP FUNCTION IF EXISTS ensure_monthly_partitions(text, int)")
 
+    _strip = ", \n"
     for table, columns in PARTITIONED_TABLES.items():
+        flat_cols = (
+            columns
+            .replace("BIGSERIAL", "BIGSERIAL PRIMARY KEY")
+            .replace("PRIMARY KEY (id, ts_bucket)", "")
+            .rstrip(_strip)
+        )
         op.execute(f"ALTER TABLE {table} RENAME TO {table}_partitioned")
-        op.execute(f"CREATE TABLE {table} ({columns.replace('BIGSERIAL', 'BIGSERIAL PRIMARY KEY').replace('PRIMARY KEY (id, ts_bucket)', '').rstrip(', \n')})")
+        op.execute(f"CREATE TABLE {table} ({flat_cols})")
         op.execute(f"INSERT INTO {table} SELECT * FROM {table}_partitioned")
         op.execute(f"DROP TABLE {table}_partitioned CASCADE")
         for idx_name, cols in PARTITION_INDEXES[table]:
