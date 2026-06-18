@@ -212,6 +212,11 @@ async def _generate_flows_and_util(
                     util = min(99.5, 100.0 * bps / iface["speed_bps"])
                     in_util = round(util * random.uniform(0.85, 1.0), 2)
                     out_util = round(util * random.uniform(0.85, 1.0), 2)
+                    # Errors are a function of the link's load, not of
+                    # any one talker. Looking at ``intensity`` here would
+                    # bind error injection to whichever talker came last
+                    # in the iteration, which is a bug.
+                    error_count = 2 if util > 80 else 0
                     session.add(
                         InterfaceUtilizationMinute(
                             tenant_id=tenant_id,
@@ -222,7 +227,7 @@ async def _generate_flows_and_util(
                             out_bps=int(bps * 0.9),
                             in_util_pct=in_util,
                             out_util_pct=out_util,
-                            error_count=(2 if intensity == "high" and util > 80 else 0),
+                            error_count=error_count,
                         )
                     )
                     summary["util_rows"] += 1

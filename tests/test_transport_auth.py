@@ -182,6 +182,51 @@ def test_lifespan_event_passes_through(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_websocket_reject_emits_close_not_http_response(monkeypatch):
+    """An unauthorized websocket scope must NOT receive http.response.*
+    messages — those crash Starlette's WS protocol layer. We expect a
+    single websocket.close with code 1008 (policy violation)."""
+    mod = _import_module(monkeypatch)
+    inner, calls = _make_inner_app()
+    mw = mod.TransportAuthMiddleware(inner, key="secret-1")
+
+    ws_scope = {
+        "type": "websocket",
+        "path": "/mcp",
+        "raw_path": b"/mcp",
+        "query_string": b"",
+        "headers": [],
+    }
+    rec = _Recorder()
+    asyncio.run(mw(ws_scope, rec, rec.send))
+
+    assert calls["n"] == 0
+    assert len(rec.events) == 1
+    msg = rec.events[0]
+    assert msg["type"] == "websocket.close"
+    assert msg["code"] == 1008
+    # No http.response anywhere
+    for e in rec.events:
+        assert not e["type"].startswith("http.response")
+
+
+def test_websocket_passes_through_with_valid_key(monkeypatch):
+    mod = _import_module(monkeypatch)
+    inner, calls = _make_inner_app()
+    mw = mod.TransportAuthMiddleware(inner, key="secret-1")
+
+    ws_scope = {
+        "type": "websocket",
+        "path": "/mcp",
+        "raw_path": b"/mcp",
+        "query_string": b"",
+        "headers": [(b"x-mcp-key", b"secret-1")],
+    }
+    rec = _Recorder()
+    asyncio.run(mw(ws_scope, rec, rec.send))
+    assert calls["n"] == 1
+
+
 def test_get_transport_key_reads_env(monkeypatch):
     mod = _import_module(monkeypatch)
     monkeypatch.delenv("MCP_TRANSPORT_KEY", raising=False)

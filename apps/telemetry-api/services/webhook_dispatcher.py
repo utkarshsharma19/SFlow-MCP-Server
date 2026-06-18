@@ -85,12 +85,18 @@ async def dispatch_once(
     http_client: httpx.AsyncClient,
     now: datetime | None = None,
 ) -> list[dict]:
-    """One pass: deliver every undelivered qualifying anomaly. Returns receipts."""
+    """One pass: deliver every undelivered qualifying anomaly. Returns receipts.
+
+    The whole dispatcher is a cross-tenant background loop — it operates
+    above any one tenant's RLS scope. Every query explicitly filters by
+    ``sub.tenant_id`` so RLS is *redundant*, but it's also actively in
+    the way: ``SET LOCAL app.tenant_id`` clears on every commit, and
+    ``_post_one`` commits per delivery, so any per-tenant binding would
+    have to be re-applied between each iteration. Wrapping the entire
+    function in ``bypass_rls`` keeps the call sites simple and the
+    behavior obvious: cross-tenant intent is declared at the loop level.
+    """
     now = now or datetime.now(timezone.utc)
-    # Subscriptions are cross-tenant by definition — the loop runs above
-    # tenancy. We re-bind tenant context for each delivery so any read
-    # of tenant-scoped data inside the delivery (secrets, anomaly) still
-    # passes RLS.
     receipts: list[dict] = []
     async with bypass_rls(db):
         subs = (
@@ -101,13 +107,15 @@ async def dispatch_once(
             )
         ).scalars().all()
 
-    for sub in subs:
-        try:
-            receipts.extend(
-                await _deliver_for_subscription(db, http_client, sub, now)
-            )
-        except Exception as exc:  # noqa: BLE001 — one bad sub must not stall the loop
-            log.exception("webhook subscription %s: dispatch error: %s", sub.id, exc)
+        for sub in subs:
+            try:
+                receipts.extend(
+                    await _deliver_for_subscription(db, http_client, sub, now)
+                )
+            except Exception as exc:  # noqa: BLE001 — one bad sub must not stall the loop
+                log.exception(
+                    "webhook subscription %s: dispatch error: %s", sub.id, exc
+                )
     return receipts
 
 
@@ -117,6 +125,12 @@ async def _deliver_for_subscription(
     sub: WebhookSubscription,
     now: datetime,
 ) -> list[dict]:
+    """Caller (``dispatch_once``) already holds ``bypass_rls`` for the
+    transaction. We do *not* set tenant context here because
+    ``_post_one`` commits per delivery, which would drop any SET LOCAL
+    binding between iterations — making per-tx tenant binding cost two
+    SET-LOCAL roundtrips per delivery for zero security benefit (every
+    query below names the tenant explicitly)."""
     min_rank = SEVERITY_RANK.get(sub.severity_min, 4)
     allowed = [s for s, r in SEVERITY_RANK.items() if r >= min_rank]
 
@@ -164,9 +178,16 @@ async def _deliver_for_subscription(
     ).scalars().all()
 
     receipts: list[dict] = []
+    # Track failure count for this subscription locally across the
+    # candidate loop. ``sub.consecutive_failures`` is the snapshot from
+    # the SELECT and won't reflect failures we just wrote — using it as
+    # the +1 base would clobber the counter to "1" on every failure in
+    # one tick. We seed from the snapshot and increment in memory; the
+    # SQL update writes the running total each time.
+    failure_counter = int(sub.consecutive_failures or 0)
     for anomaly in candidates:
-        receipt = await _post_one(
-            db, http_client, sub, anomaly, secret.plaintext, now
+        receipt, failure_counter = await _post_one(
+            db, http_client, sub, anomaly, secret.plaintext, now, failure_counter
         )
         receipts.append(receipt)
     return receipts
@@ -179,7 +200,14 @@ async def _post_one(
     anomaly: AnomalyEvent,
     secret_plaintext: str,
     now: datetime,
-) -> dict:
+    failure_counter: int,
+) -> tuple[dict, int]:
+    """Deliver one anomaly and persist the attempt.
+
+    Returns (receipt, updated_failure_counter). The caller threads the
+    counter across multiple deliveries to the same subscription so we
+    don't read a stale value off the ORM object.
+    """
     payload = build_payload(anomaly)
     body = json.dumps(payload, default=str, separators=(",", ":")).encode("utf-8")
     headers = {
@@ -228,23 +256,24 @@ async def _post_one(
     )
     # Update subscription health counters in the same transaction.
     if status == "ok":
+        failure_counter = 0
         await db.execute(
             update(WebhookSubscription)
             .where(WebhookSubscription.id == sub.id)
             .values(last_success_at=now, consecutive_failures=0)
         )
     else:
-        new_failures = sub.consecutive_failures + 1
+        failure_counter += 1
         values: dict = {
             "last_failure_at": now,
-            "consecutive_failures": new_failures,
+            "consecutive_failures": failure_counter,
         }
-        if new_failures >= MAX_CONSECUTIVE_FAILURES:
+        if failure_counter >= MAX_CONSECUTIVE_FAILURES:
             values["is_active"] = False
             log.warning(
                 "subscription %s suspended after %d consecutive failures",
                 sub.id,
-                new_failures,
+                failure_counter,
             )
         await db.execute(
             update(WebhookSubscription)
@@ -253,13 +282,14 @@ async def _post_one(
         )
     await db.commit()
 
-    return {
+    receipt = {
         "subscription_id": str(sub.id),
         "anomaly_id": str(anomaly.id),
         "status": status,
         "status_code": status_code,
         "duration_ms": duration_ms,
     }
+    return receipt, failure_counter
 
 
 async def webhook_dispatcher_loop() -> None:

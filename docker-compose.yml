@@ -90,6 +90,10 @@ services:
       VERITY_CONTROLLER_ID: ${VERITY_CONTROLLER_ID:-default}
 
       TENANT_ROUTING_TTL_SECONDS: ${TENANT_ROUTING_TTL_SECONDS:-60}
+
+      # Prometheus scrape token. When set, /metrics requires
+      # ``Authorization: Bearer <this value>``.
+      FLOWMIND_METRICS_TOKEN: ${FLOWMIND_METRICS_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

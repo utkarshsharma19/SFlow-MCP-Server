@@ -9,8 +9,9 @@ half-open and the next request is allowed through to probe recovery.
 """
 import logging
 import os
+import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import httpx
@@ -62,11 +63,42 @@ class _BreakerState:
 
 _breakers: dict[str, _BreakerState] = {}
 
+# Path segments that look like UUIDs / numeric IDs get replaced with
+# ``:id`` so dynamic routes (``/anomalies/<uuid>/acknowledge``) collapse
+# to a single breaker entry instead of growing unbounded. Without this,
+# each new UUID would create its own state and the breaker would never
+# trip for the endpoint as a whole.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _breaker_key(path: str) -> str:
+    """Normalize ``/anomalies/<uuid>/acknowledge`` → ``/anomalies/:id/acknowledge``.
+
+    Conservative: only matches well-formed UUIDs and all-digit segments.
+    We don't try to be clever about hostnames or arbitrary IDs in the
+    query string — leave those alone since they're caller-specified.
+    """
+    parts = path.split("?", 1)[0].split("/")
+    normalized = []
+    for seg in parts:
+        if not seg:
+            normalized.append(seg)
+            continue
+        if _UUID_RE.match(seg) or seg.isdigit():
+            normalized.append(":id")
+        else:
+            normalized.append(seg)
+    return "/".join(normalized)
+
 
 def _breaker_for(path: str) -> _BreakerState:
-    if path not in _breakers:
-        _breakers[path] = _BreakerState()
-    return _breakers[path]
+    key = _breaker_key(path)
+    if key not in _breakers:
+        _breakers[key] = _BreakerState()
+    return _breakers[key]
 
 
 def _circuit_is_open(state: _BreakerState, now: float) -> bool:

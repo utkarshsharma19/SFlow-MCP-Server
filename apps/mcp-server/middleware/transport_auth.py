@@ -54,7 +54,10 @@ class TransportAuthMiddleware:
         self.expected_key = key
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in ("http", "websocket"):
+        scope_type = scope["type"]
+
+        # Pass-through for ASGI lifespan and any other scope kind.
+        if scope_type not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
 
@@ -68,7 +71,14 @@ class TransportAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        await _reject_unauthorized(scope, send)
+        # The reject path differs between HTTP and WebSocket: HTTP gets
+        # a 401 response, WebSocket gets a close before the handshake
+        # completes. Emitting an http.response.start on a websocket
+        # scope crashes Starlette's protocol layer, so we branch here.
+        if scope_type == "websocket":
+            await _reject_websocket(send)
+        else:
+            await _reject_unauthorized(scope, send)
 
 
 def _is_authorized(scope: Scope, expected_key: str) -> bool:
@@ -106,6 +116,17 @@ async def _reject_unauthorized(scope: Scope, send: Send) -> None:
         {"type": "http.response.start", "status": 401, "headers": headers}
     )
     await send({"type": "http.response.body", "body": body})
+
+
+async def _reject_websocket(send: Send) -> None:
+    """ASGI WebSocket close codes per RFC 6455 + ASGI spec.
+
+    1008 = "policy violation" — the appropriate code for an auth
+    failure on the handshake. Some clients expose this back to the
+    JS layer so the operator can distinguish an auth failure from a
+    network blip.
+    """
+    await send({"type": "websocket.close", "code": 1008, "reason": "unauthorized"})
 
 
 def get_transport_key() -> str | None:

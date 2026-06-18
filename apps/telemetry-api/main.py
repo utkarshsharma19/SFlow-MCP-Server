@@ -3,7 +3,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Header, HTTPException, Response
 
 from collectors.gnmi_client import GNMIClient
 from collectors.sflow_rt_client import SFlowRTClient
@@ -100,14 +100,37 @@ async def health():
 
 
 @app.get("/metrics")
-async def metrics_endpoint() -> Response:
+async def metrics_endpoint(
+    authorization: str | None = Header(default=None),
+) -> Response:
     """Prometheus exposition. Reads cross-tenant by design (operator view).
 
-    Mounted directly on the app (not behind APIKeyMiddleware) because
-    Prom scrapes via in-cluster scrape configs that won't carry an
-    API key. The middleware's EXEMPT_PATHS list includes ``/metrics``.
-    Body is text/plain per Prometheus exposition spec.
+    Mounted directly on the app (not behind the tenant-aware
+    APIKeyMiddleware) because Prometheus scrape configs carry one
+    static credential, not a per-tenant key. The path is in
+    ``APIKeyMiddleware.EXEMPT_PATHS`` for the same reason.
+
+    Auth: when ``FLOWMIND_METRICS_TOKEN`` is set in the environment,
+    the request MUST carry ``Authorization: Bearer <token>``. Prometheus
+    supports this out of the box via ``bearer_token_file`` in the
+    scrape config. When the env is unset the endpoint is open — a
+    development convenience that must not ship to prod.
+
+    Output: ``text/plain; version=0.0.4`` per the Prometheus exposition
+    spec, with cross-tenant rollups via ``bypass_rls``.
     """
+    expected = os.getenv("FLOWMIND_METRICS_TOKEN")
+    if expected:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(
+                status_code=401,
+                detail="metrics endpoint requires Authorization: Bearer <token>",
+                headers={"WWW-Authenticate": 'Bearer realm="flowmind-metrics"'},
+            )
+        presented = authorization[len("Bearer "):].strip()
+        if presented != expected:
+            raise HTTPException(status_code=403, detail="invalid metrics token")
+
     async with AsyncSessionLocal() as session:
         async with bypass_rls(session):
             body = await render_prometheus(session)

@@ -49,7 +49,10 @@ async def get_link_history(
         bucket_minutes = 1
     now = datetime.now(timezone.utc)
     since = now - timedelta(minutes=window_minutes)
-    bucket_count = max(1, window_minutes // bucket_minutes)
+    # Ceiling division so a 60-min window at 7-min buckets returns 9
+    # bins covering 63 min, not 8 covering 56 min. The chart then spans
+    # the full requested lookback even when window % bucket != 0.
+    bucket_count = max(1, -(-window_minutes // bucket_minutes))
     if bucket_count > MAX_BUCKETS:
         # Bump the bucket width rather than silently truncating — the
         # chatbot should never see a half-rendered chart.

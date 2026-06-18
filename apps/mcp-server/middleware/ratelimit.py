@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from collections import defaultdict
 from functools import wraps
 from typing import Any, Awaitable, Callable
@@ -86,8 +87,12 @@ async def _check_redis(
       3. If under the budget: ZADD the current timestamp + EXPIRE the key.
       4. Otherwise: report the wait-time as (oldest_kept_ts + window) - now.
 
-    We use the call timestamp (ms) as both the ZSET member and score so
-    duplicates across rapid bursts don't collide.
+    ZSET members must be globally unique across all callers; otherwise
+    two concurrent MCP replicas can produce the same ``{ms}-{count}``
+    string, ZADD treats them as one entry, and the rate-limit budget
+    silently grows. We use ``uuid4`` for the member — irrelevant for
+    expiry math (the score holds the timestamp) but cardinality-safe
+    under arbitrary concurrency.
     """
     window_ms = window_seconds * 1000
     cutoff_ms = now_ms - window_ms
@@ -109,8 +114,9 @@ async def _check_redis(
             else:
                 retry_after = window_seconds
             return False, retry_after
+        member = uuid.uuid4().hex
         pipe = redis_client.pipeline(transaction=False)
-        pipe.zadd(key, {f"{now_ms}-{count}": now_ms})
+        pipe.zadd(key, {member: now_ms})
         pipe.expire(key, window_seconds + 1)
         await pipe.execute()
         return True, 0

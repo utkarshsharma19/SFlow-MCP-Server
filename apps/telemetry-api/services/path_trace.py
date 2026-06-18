@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
@@ -169,11 +169,17 @@ async def _hop_util(
     keys: list[tuple[str, str]],
     since: datetime,
 ) -> dict[tuple[str, str], dict]:
-    """Avg + peak util across the window for each (device, interface)."""
+    """Avg + peak util across the window for each (device, interface).
+
+    Filters pairwise on (device, interface) rather than the cross
+    product of device IN ... AND interface IN ... — interface names
+    repeat across switches (every leaf has an Eth1), so the naive
+    cross-product can match many rows that were never requested.
+    """
     if not keys:
         return {}
-    devices = list({k[0] for k in keys})
-    interfaces = list({k[1] for k in keys})
+    # Deduplicate; ordering of the IN list doesn't matter.
+    pairs = list({(d, i) for d, i in keys})
     q = (
         select(
             InterfaceUtilizationMinute.device,
@@ -193,8 +199,12 @@ async def _hop_util(
         )
         .where(InterfaceUtilizationMinute.tenant_id == tenant_id)
         .where(InterfaceUtilizationMinute.ts_bucket >= since)
-        .where(InterfaceUtilizationMinute.device.in_(devices))
-        .where(InterfaceUtilizationMinute.interface.in_(interfaces))
+        .where(
+            tuple_(
+                InterfaceUtilizationMinute.device,
+                InterfaceUtilizationMinute.interface,
+            ).in_(pairs)
+        )
         .group_by(
             InterfaceUtilizationMinute.device,
             InterfaceUtilizationMinute.interface,
