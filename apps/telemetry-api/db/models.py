@@ -752,6 +752,50 @@ class WebhookDelivery(Base):
     )
 
 
+class ChatUserKey(Base):
+    """Map a chatbot user id to a tenant-scoped API key (PR 31).
+
+    The chat gateway authenticates the user via its own mechanism, then
+    calls ``POST /chat-user-keys/resolve`` with the user id. We hand
+    back the API key id (and, on the wire, the plaintext key, which
+    we *only* surface in the resolve response, never in list / read
+    endpoints — same one-shot semantics as ``seed.py create-key``).
+    """
+
+    __tablename__ = "chat_user_keys"
+
+    id = Column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    chat_user_id = Column(String(255), nullable=False)
+    tenant_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    api_key_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    description = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_user_id", "tenant_id", name="uq_chat_user_per_tenant"
+        ),
+        Index("ix_chat_user_keys_user", "chat_user_id", "is_active"),
+        Index("ix_chat_user_keys_tenant", "tenant_id"),
+    )
+
+
 class TenantQuota(Base):
     """Per-tenant per-tool usage + limits (PR 28).
 

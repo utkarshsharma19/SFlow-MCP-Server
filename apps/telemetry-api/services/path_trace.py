@@ -31,6 +31,7 @@ from db.models import (
     BGPSessionMinute,
     FlowSummaryMinute,
     InterfaceUtilizationMinute,
+    LLDPNeighbor,
 )
 
 
@@ -92,9 +93,28 @@ async def find_path(
         db, tenant_id, {r.device for r in rows}, since
     )
 
-    # Sort by total bytes descending — heuristic stand-in for path order
-    # until LLDP-driven walking exists (PR 31).
-    rows_sorted = sorted(rows, key=lambda r: -int(r.bytes or 0))
+    candidate_devices = {r.device for r in rows}
+
+    # Try to order topologically by walking LLDP adjacency. Falls back
+    # to volume-sorted order if the LLDP subgraph isn't a clean chain
+    # (e.g. ECMP fan-out, missing neighbors, asymmetric routing).
+    adjacency = await _lldp_adjacency_for_devices(
+        db, tenant_id, candidate_devices
+    )
+    ordered_devices = _topology_order(candidate_devices, adjacency)
+
+    if ordered_devices is not None:
+        rows_sorted = _order_rows_by_devices(rows, ordered_devices)
+        ordered = True
+        order_basis = "lldp_chain"
+    else:
+        # Volume-sorted fallback. Heuristic, but stable: the chatbot
+        # consumer reads `ordered=false` and tells the operator not to
+        # over-interpret position.
+        rows_sorted = sorted(rows, key=lambda r: -int(r.bytes or 0))
+        ordered = False
+        order_basis = "volume"
+
     hops = []
     for r in rows_sorted:
         util = util_by_key.get((r.device, r.interface))
@@ -118,18 +138,29 @@ async def find_path(
         "dst_ip": dst_ip,
         "window_minutes": window_minutes,
         "hops": hops,
-        "ordered": False,
+        "ordered": ordered,
+        "order_basis": order_basis,
         "hop_count": len(hops),
         "severity": severity,
-        "confidence_note": (
-            "Path is the *set* of (device, ingress interface) samples that "
-            "observed the flow — ordering is by traffic volume, not "
-            "topological adjacency. Once LLDP neighbors are populated, "
-            "ordering will follow the graph and ``ordered=true``. "
-            "Utilization and BGP context per hop are exact within the "
-            "sampling rate of the underlying counters."
-        ),
+        "confidence_note": _confidence_note(ordered, order_basis),
     }
+
+
+def _confidence_note(ordered: bool, basis: str) -> str:
+    if ordered and basis == "lldp_chain":
+        return (
+            "Hops are ordered by LLDP adjacency — the first hop is the "
+            "device closest to the source IP, the last is closest to "
+            "the destination. Utilization and BGP context per hop are "
+            "exact within the sampling rate of the underlying counters."
+        )
+    return (
+        "Path is the *set* of (device, ingress interface) samples that "
+        "observed the flow — ordering is by traffic volume, not "
+        "topological adjacency, because the LLDP subgraph either is "
+        "incomplete or fans out (ECMP, asymmetric routing). The chatbot "
+        "should not infer a hop sequence from this list."
+    )
 
 
 async def _hop_util(
@@ -217,6 +248,124 @@ async def _bgp_for_devices(
         entry["total"] += 1
         if r.session_state == "ESTABLISHED":
             entry["up"] += 1
+    return out
+
+
+async def _lldp_adjacency_for_devices(
+    db: AsyncSession,
+    tenant_id: str,
+    devices: set[str],
+) -> dict[str, set[str]]:
+    """Build {device → set of neighbor device names} from the LLDP cache.
+
+    Only includes neighbors whose system_name *also* appears in
+    ``devices`` — adjacency to a switch we never observed on this flow
+    is irrelevant for ordering this path. That filtering is what lets
+    us reuse the LLDP table for any flow without false branches.
+    """
+    if not devices:
+        return {}
+    q = (
+        select(
+            LLDPNeighbor.device,
+            LLDPNeighbor.neighbor_system_name,
+        )
+        .where(LLDPNeighbor.tenant_id == tenant_id)
+        .where(LLDPNeighbor.device.in_(list(devices)))
+        .where(LLDPNeighbor.neighbor_system_name.is_not(None))
+    )
+    adj: dict[str, set[str]] = {}
+    for row in (await db.execute(q)).all():
+        nbr = row.neighbor_system_name
+        if nbr not in devices or nbr == row.device:
+            continue
+        adj.setdefault(row.device, set()).add(nbr)
+    return adj
+
+
+def _topology_order(
+    devices: set[str], adjacency: dict[str, set[str]]
+) -> list[str] | None:
+    """Return the devices ordered head→tail along an LLDP chain.
+
+    Returns ``None`` when the subgraph isn't a clean chain — branching
+    means we don't know which direction the flow went, and the caller
+    falls back to the volume heuristic.
+
+    Heuristic: a chain has exactly one node with no neighbors-among-
+    candidates "to the left" (the head) and one with none "to the
+    right" (the tail). LLDP is bidirectional (both ends see each other),
+    so we can't infer direction from the adjacency alone — but a chain
+    of N candidates yields N-1 bidirectional edges and N nodes where
+    the two ends have degree 1.
+    """
+    if not devices:
+        return []
+    if len(devices) == 1:
+        return list(devices)
+
+    # Symmetrize: LLDP entries from leaf1 may name spine1 and vice
+    # versa; if only one side reported, still treat them as adjacent.
+    # Filter self-loops here so they don't inflate degree counts and
+    # confuse the chain detection.
+    sym: dict[str, set[str]] = {d: set() for d in devices}
+    for a, nbrs in adjacency.items():
+        for b in nbrs:
+            if a == b:
+                continue
+            sym[a].add(b)
+            sym.setdefault(b, set()).add(a)
+
+    # A chain has exactly 2 nodes of degree 1 (the endpoints) and the
+    # rest of degree 2. Any other shape (star, tree, branch) → None.
+    deg = {d: len(sym.get(d, set())) for d in devices}
+    endpoints = [d for d, k in deg.items() if k == 1]
+    if len(endpoints) != 2:
+        return None
+    if any(deg[d] != 2 for d in devices if d not in endpoints):
+        return None
+
+    # Walk from one endpoint to the other.
+    head = sorted(endpoints)[0]  # deterministic between two valid heads
+    visited: list[str] = [head]
+    prev: str | None = None
+    cur = head
+    while True:
+        nexts = sym.get(cur, set()) - ({prev} if prev else set())
+        if not nexts:
+            break
+        if len(nexts) > 1:
+            # Defensive: chain check above should have caught this
+            return None
+        nxt = next(iter(nexts))
+        visited.append(nxt)
+        prev, cur = cur, nxt
+        if cur == endpoints[1]:
+            break
+
+    if set(visited) != devices:
+        # Disconnected — there are extra candidates not on the chain.
+        return None
+    return visited
+
+
+def _order_rows_by_devices(
+    rows, ordered_devices: list[str]
+):
+    """Reorder the (device, interface) rows to follow ``ordered_devices``.
+
+    Within one device's group (rare: a flow with multiple ingress
+    interfaces on the same device, e.g. due to ECMP fan-in), we keep
+    descending byte order so the heaviest entry leads.
+    """
+    by_device: dict[str, list] = {}
+    for r in rows:
+        by_device.setdefault(r.device, []).append(r)
+    out = []
+    for d in ordered_devices:
+        group = by_device.get(d, [])
+        group.sort(key=lambda r: -int(r.bytes or 0))
+        out.extend(group)
     return out
 
 

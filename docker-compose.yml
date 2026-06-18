@@ -115,6 +115,12 @@ services:
       # Circuit breaker tuning (PR 30).
       MCP_CB_FAILURE_THRESHOLD: ${MCP_CB_FAILURE_THRESHOLD:-5}
       MCP_CB_COOLDOWN_SECONDS: ${MCP_CB_COOLDOWN_SECONDS:-30}
+      # MCP transport auth (PR 31). When set, every HTTP request to the
+      # MCP server must carry ``X-MCP-Key: <this value>``. Stdio is
+      # exempt (calling-process identity).
+      MCP_TRANSPORT_KEY: ${MCP_TRANSPORT_KEY:-}
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: '8090'
     depends_on:
       telemetry-api:
         condition: service_started

@@ -13,17 +13,19 @@ async def find_path(
     dst_ip: str,
     window_minutes: int = 30,
 ) -> dict:
-    """Find the set of switches a src→dst flow traversed in the window.
+    """Find the path a src→dst flow traversed through the fabric.
 
     Every switch that sampled the flow appears as a hop with its
     ingress interface, traffic volume, peak link utilization, and
     BGP peering health. Use this to answer 'why is A → B slow?' —
     the LLM should look at the highest-util hop first.
 
-    Today the hops are ordered by traffic volume, not topology — the
-    response sets ``ordered=false`` so the chatbot can be explicit
-    about that. Once LLDP-driven adjacency is populated, ordering
-    will follow the graph.
+    When LLDP adjacency forms a clean chain between the hops, the
+    response is ordered head→tail with ``ordered=true`` and
+    ``order_basis="lldp_chain"``. When the LLDP subgraph branches
+    (ECMP / asymmetric / partial) the response falls back to
+    volume-sorted with ``ordered=false`` and ``order_basis="volume"``
+    — always check both fields before quoting hop order.
 
     Args:
         src_ip: Source IP (literal address, not hostname).

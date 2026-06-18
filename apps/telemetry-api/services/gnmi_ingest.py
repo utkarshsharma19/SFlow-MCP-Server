@@ -27,8 +27,10 @@ from services.tenant_routing import SOURCE_KIND_GNMI, TenantRouter, get_router
 from shared.schemas.device_state import (
     BGPNeighborState,
     InterfaceState,
+    LLDPNeighborState,
     QueueState,
 )
+from services.lldp_neighbors import upsert_neighbor_observation
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +95,33 @@ async def normalize_bgp_neighbors(
     ]
 
 
+async def normalize_lldp_neighbors(
+    neighbors: List[LLDPNeighborState],
+    router: TenantRouter | None = None,
+) -> list[dict]:
+    """Resolve tenant per device and shape rows for the upsert path.
+
+    Unlike the other normalizers, LLDP is *not* a time-series — we
+    upsert into ``lldp_neighbors`` and refresh ``last_seen_at`` rather
+    than appending. So no ts_bucket here; the caller passes each row
+    individually to ``upsert_neighbor_observation``.
+    """
+    tenants = await _resolve_devices({n.device for n in neighbors}, router)
+    return [
+        dict(
+            tenant_id=tenants[n.device],
+            device=n.device,
+            interface=n.interface,
+            neighbor_chassis_id=n.neighbor_chassis_id,
+            neighbor_system_name=n.neighbor_system_name,
+            neighbor_port_id=n.neighbor_port_id,
+            neighbor_port_description=n.neighbor_port_description,
+            neighbor_management_address=n.neighbor_management_address,
+        )
+        for n in neighbors
+    ]
+
+
 async def normalize_queue_stats(
     queues: List[QueueState],
     router: TenantRouter | None = None,
@@ -146,10 +175,12 @@ async def gnmi_ingestion_loop(client: GNMIClient) -> None:
                 interfaces = await client.get_interface_state()
                 neighbors = await client.get_bgp_neighbors()
                 queues = await client.get_queue_stats()
+                lldp = await client.get_lldp_neighbors()
 
                 if_rows = await normalize_interface_state(interfaces, router)
                 bgp_rows = await normalize_bgp_neighbors(neighbors, router)
                 queue_rows = await normalize_queue_stats(queues, router)
+                lldp_rows = await normalize_lldp_neighbors(lldp, router)
 
                 async with AsyncSessionLocal() as session:
                     if if_rows:
@@ -159,6 +190,13 @@ async def gnmi_ingestion_loop(client: GNMIClient) -> None:
                     if queue_rows:
                         session.add_all([QueueStatsMinute(**r) for r in queue_rows])
                     await session.commit()
+
+                # LLDP rows take the upsert path (refresh last_seen_at on
+                # existing rows, preserve first_seen_at). Each call commits
+                # — small N, infrequent change, simpler than batching.
+                for row in lldp_rows:
+                    async with AsyncSessionLocal() as session:
+                        await upsert_neighbor_observation(session, **row)
 
                 if otel.flows_ingested is not None:
                     otel.flows_ingested.add(
@@ -170,6 +208,9 @@ async def gnmi_ingestion_loop(client: GNMIClient) -> None:
                     otel.flows_ingested.add(
                         len(queue_rows), {"result": "ok", "kind": "gnmi_queue"}
                     )
+                    otel.flows_ingested.add(
+                        len(lldp_rows), {"result": "ok", "kind": "gnmi_lldp"}
+                    )
                 if otel.ingestion_duration is not None:
                     otel.ingestion_duration.record(
                         time.monotonic() - start, {"phase": "gnmi_cycle"}
@@ -177,7 +218,7 @@ async def gnmi_ingestion_loop(client: GNMIClient) -> None:
 
                 log.info(
                     f"gNMI: {len(if_rows)} iface, {len(bgp_rows)} bgp, "
-                    f"{len(queue_rows)} queue rows"
+                    f"{len(queue_rows)} queue, {len(lldp_rows)} lldp rows"
                 )
         except Exception as e:
             log.error(f"gNMI ingestion error: {e}", exc_info=True)
