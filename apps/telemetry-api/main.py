@@ -14,6 +14,7 @@ from middleware.auth import APIKeyMiddleware
 from otel import setup_telemetry
 from shared.logging import configure_logging
 from routers import admin as admin_router
+from routers import admin_setup as admin_setup_router
 from routers import anomalies as anomalies_router
 from routers import chat as chat_router
 from routers import chat_user_keys as chat_user_keys_router
@@ -87,6 +88,7 @@ app.include_router(rdma_router.router)
 app.include_router(fabric_router.router)
 app.include_router(intent_router.router)
 app.include_router(admin_router.router)
+app.include_router(admin_setup_router.router)
 app.include_router(tool_audit_router.router)
 app.include_router(chat_router.router)
 app.include_router(chat_user_keys_router.router)
