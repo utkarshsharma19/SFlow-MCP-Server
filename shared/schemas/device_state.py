@@ -38,6 +38,26 @@ class BGPNeighborState(BaseModel):
     timestamp: datetime
 
 
+class LLDPNeighborState(BaseModel):
+    """openconfig-lldp:lldp/interfaces/interface/neighbors/neighbor/state snapshot.
+
+    LLDP advertises L2 adjacency. We persist one row per (local
+    interface, remote chassis_id) — that's the granularity at which a
+    chatbot answers "what's plugged into Eth0/3?" and "which devices
+    are adjacent to leaf1?" without rebuilding the topology graph from
+    flow data.
+    """
+
+    device: str
+    interface: str
+    neighbor_chassis_id: str
+    neighbor_system_name: Optional[str] = None
+    neighbor_port_id: Optional[str] = None
+    neighbor_port_description: Optional[str] = None
+    neighbor_management_address: Optional[str] = None
+    timestamp: datetime
+
+
 class QueueState(BaseModel):
     """openconfig-qos:qos/interfaces/.../queues/queue/state snapshot.
 

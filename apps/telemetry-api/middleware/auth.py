@@ -26,7 +26,7 @@ from shared.logging import log_context
 
 log = logging.getLogger(__name__)
 
-EXEMPT_PATHS = {"/health", "/docs", "/redoc", "/openapi.json"}
+EXEMPT_PATHS = {"/health", "/docs", "/redoc", "/openapi.json", "/metrics"}
 REQUEST_ID_HEADER = "X-Request-Id"
 
 

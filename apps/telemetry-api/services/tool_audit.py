@@ -35,6 +35,8 @@ class QuotaDecision:
     call_limit: int | None
     bytes_out_this_period: int
     byte_limit: int | None
+    llm_tokens_this_period: int
+    token_limit: int | None
     reason: str
 
     def to_response(self) -> dict[str, Any]:
@@ -44,6 +46,8 @@ class QuotaDecision:
             "call_limit": self.call_limit,
             "bytes_out_this_period": self.bytes_out_this_period,
             "byte_limit": self.byte_limit,
+            "llm_tokens_this_period": self.llm_tokens_this_period,
+            "token_limit": self.token_limit,
             "reason": self.reason,
         }
 
@@ -78,7 +82,8 @@ async def consume_quota(
                         tenant_quotas.bytes_out_this_period + EXCLUDED.bytes_out_this_period,
                     updated_at = now()
                 RETURNING calls_this_period, bytes_out_this_period,
-                          call_limit, byte_limit
+                          llm_tokens_this_period,
+                          call_limit, byte_limit, token_limit
                 """
             ),
             {
@@ -93,19 +98,87 @@ async def consume_quota(
 
     over_calls = row.call_limit is not None and row.calls_this_period > row.call_limit
     over_bytes = row.byte_limit is not None and row.bytes_out_this_period > row.byte_limit
-    allowed = not (over_calls or over_bytes)
-    reason = (
-        "ok"
-        if allowed
-        else ("call_limit_exceeded" if over_calls else "byte_limit_exceeded")
+    over_tokens = (
+        row.token_limit is not None and row.llm_tokens_this_period > row.token_limit
     )
+    allowed = not (over_calls or over_bytes or over_tokens)
+    if allowed:
+        reason = "ok"
+    elif over_calls:
+        reason = "call_limit_exceeded"
+    elif over_bytes:
+        reason = "byte_limit_exceeded"
+    else:
+        reason = "token_limit_exceeded"
     return QuotaDecision(
         allowed=allowed,
         calls_this_period=row.calls_this_period,
         call_limit=row.call_limit,
         bytes_out_this_period=row.bytes_out_this_period,
         byte_limit=row.byte_limit,
+        llm_tokens_this_period=row.llm_tokens_this_period,
+        token_limit=row.token_limit,
         reason=reason,
+    )
+
+
+async def charge_tokens(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    tool_name: str = "*",
+    tokens: int,
+    now: datetime | None = None,
+) -> QuotaDecision:
+    """Atomically add ``tokens`` to the current period's token counter.
+
+    The chat gateway calls this once per turn with the (prompt +
+    completion) token count from Anthropic's response. We default
+    ``tool_name='*'`` because tokens are billed at the conversation
+    level, not the tool level — operators set the limit on the wildcard
+    row.
+    """
+    period_start = current_period_start(now)
+    row = (
+        await db.execute(
+            text(
+                """
+                INSERT INTO tenant_quotas
+                    (tenant_id, tool_name, period_start,
+                     calls_this_period, bytes_out_this_period,
+                     llm_tokens_this_period,
+                     call_limit, byte_limit, token_limit, updated_at)
+                VALUES (:tenant, :tool, :period, 0, 0, :tokens,
+                        NULL, NULL, NULL, now())
+                ON CONFLICT (tenant_id, tool_name, period_start) DO UPDATE
+                SET llm_tokens_this_period =
+                        tenant_quotas.llm_tokens_this_period + EXCLUDED.llm_tokens_this_period,
+                    updated_at = now()
+                RETURNING calls_this_period, bytes_out_this_period,
+                          llm_tokens_this_period,
+                          call_limit, byte_limit, token_limit
+                """
+            ),
+            {
+                "tenant": tenant_id,
+                "tool": tool_name,
+                "period": period_start,
+                "tokens": int(tokens),
+            },
+        )
+    ).one()
+    await db.commit()
+
+    over = row.token_limit is not None and row.llm_tokens_this_period > row.token_limit
+    return QuotaDecision(
+        allowed=not over,
+        calls_this_period=row.calls_this_period,
+        call_limit=row.call_limit,
+        bytes_out_this_period=row.bytes_out_this_period,
+        byte_limit=row.byte_limit,
+        llm_tokens_this_period=row.llm_tokens_this_period,
+        token_limit=row.token_limit,
+        reason="ok" if not over else "token_limit_exceeded",
     )
 
 
@@ -164,6 +237,7 @@ async def set_quota(
     tool_name: str,
     call_limit: int | None,
     byte_limit: int | None,
+    token_limit: int | None = None,
     period_start: datetime | None = None,
 ) -> None:
     """Admin-facing: set (or clear) limits for the current period."""
@@ -173,11 +247,12 @@ async def set_quota(
             """
             INSERT INTO tenant_quotas
                 (tenant_id, tool_name, period_start,
-                 call_limit, byte_limit, updated_at)
-            VALUES (:tenant, :tool, :period, :call, :byte, now())
+                 call_limit, byte_limit, token_limit, updated_at)
+            VALUES (:tenant, :tool, :period, :call, :byte, :token, now())
             ON CONFLICT (tenant_id, tool_name, period_start) DO UPDATE
             SET call_limit = EXCLUDED.call_limit,
                 byte_limit = EXCLUDED.byte_limit,
+                token_limit = EXCLUDED.token_limit,
                 updated_at = now()
             """
         ),
@@ -187,6 +262,7 @@ async def set_quota(
             "period": period,
             "call": call_limit,
             "byte": byte_limit,
+            "token": token_limit,
         },
     )
     await db.commit()

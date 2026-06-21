@@ -11,6 +11,7 @@ from auth.context import TenantContext, require_role
 from db import get_db
 from db.models import TenantQuota, ToolCallAudit
 from services.tool_audit import (
+    charge_tokens,
     consume_quota,
     current_period_start,
     record_tool_call,
@@ -116,8 +117,10 @@ async def get_quota(
                 "tool_name": r.tool_name,
                 "calls_this_period": r.calls_this_period,
                 "bytes_out_this_period": r.bytes_out_this_period,
+                "llm_tokens_this_period": r.llm_tokens_this_period,
                 "call_limit": r.call_limit,
                 "byte_limit": r.byte_limit,
+                "token_limit": r.token_limit,
             }
             for r in rows
         ],
@@ -136,5 +139,34 @@ async def put_quota(
         tool_name=payload["tool_name"],
         call_limit=payload.get("call_limit"),
         byte_limit=payload.get("byte_limit"),
+        token_limit=payload.get("token_limit"),
     )
     return {"status": "ok"}
+
+
+@router.post("/charge-tokens")
+async def charge_tokens_endpoint(
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    ctx: TenantContext = Depends(require_role("viewer")),
+):
+    """Chat gateway calls this once per turn with the LLM token count.
+
+    The chat-gateway is a separate service that holds the user-facing
+    Anthropic key; it knows the per-turn token count from the API
+    response and reports it here. We return the live counter so the
+    gateway can throttle the conversation (degrade to a smaller model,
+    show "approaching budget" UI) before hitting the hard 429.
+    """
+    tokens = int(payload.get("tokens", 0))
+    if tokens <= 0:
+        raise HTTPException(status_code=400, detail="tokens must be > 0")
+    decision = await charge_tokens(
+        db,
+        tenant_id=ctx.tenant_id,
+        tool_name=payload.get("tool_name", "*"),
+        tokens=tokens,
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=429, detail=decision.to_response())
+    return decision.to_response()

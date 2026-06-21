@@ -23,6 +23,7 @@ from typing import List, Optional
 from shared.schemas.device_state import (
     BGPNeighborState,
     InterfaceState,
+    LLDPNeighborState,
     QueueState,
 )
 
@@ -203,6 +204,37 @@ class GNMIClient:
                 log.warning(f"gNMI queue fetch failed for {host}: {e}")
         return out
 
+    async def get_lldp_neighbors(self) -> List[LLDPNeighborState]:
+        """Pull LLDP adjacency from every target.
+
+        Some platforms expose LLDP under ``openconfig-lldp:lldp`` and
+        some under the legacy ``lldp:lldp`` namespace; we try the
+        OpenConfig path first and fall back. A target that has neither
+        path returns 0 rows without raising — silent ingest is fine,
+        ``get_device_neighbors`` will say "no neighbors recorded".
+        """
+        if not self.enabled:
+            return []
+        out: List[LLDPNeighborState] = []
+        for host, port in self.targets:
+            resp = None
+            for path in (
+                "openconfig-lldp:lldp/interfaces",
+                "lldp/interfaces",
+            ):
+                try:
+                    with self._open(host, port) as gc:
+                        resp = gc.get(path=[path])
+                    break
+                except Exception as e:
+                    log.debug(f"gNMI LLDP fetch via {path!r} on {host}: {e}")
+                    resp = None
+            if resp is None:
+                log.warning(f"gNMI LLDP fetch failed for {host} on all paths")
+                continue
+            out.extend(_parse_lldp_neighbors(host, resp))
+        return out
+
     async def close(self) -> None:
         # pygnmi context-manages each call, nothing persistent to close.
         return None
@@ -285,6 +317,57 @@ def _parse_bgp_neighbors(device: str, resp: dict | None) -> List[BGPNeighborStat
                 prefixes_received=_safe_int(leaves.get("received-prefixes")),
                 prefixes_sent=_safe_int(leaves.get("sent-prefixes")),
                 last_error=_safe_str(leaves.get("last-error")),
+                timestamp=ts,
+            )
+        )
+    return out
+
+
+def _parse_lldp_neighbors(device: str, resp: dict | None) -> List[LLDPNeighborState]:
+    """Pull (interface, neighbor) pairs out of an LLDP Get response.
+
+    Path shape (OpenConfig):
+      lldp/interfaces/interface[name=Eth0]/neighbors/neighbor[id=<chassis>]
+          /state/{chassis-id,system-name,port-id,port-description,
+                  management-address}
+
+    The same response can hold multiple neighbors per local interface
+    (rare on a switch — usually one — but the LLDP spec permits N), so
+    we group on (interface, chassis_id).
+    """
+    by_key: dict[tuple[str, str], dict] = {}
+    for path, val in _walk_notifications(resp):
+        if (
+            "interface[name=" not in path
+            or "neighbor[id=" not in path
+        ):
+            continue
+        iface = path.split("interface[name=", 1)[1].split("]", 1)[0]
+        nbr_id = path.split("neighbor[id=", 1)[1].split("]", 1)[0]
+        slot = by_key.setdefault((iface, nbr_id), {})
+        leaf = path.rsplit("/", 1)[-1]
+        slot[leaf] = val
+
+    ts = _now()
+    out: List[LLDPNeighborState] = []
+    for (iface, nbr_id), leaves in by_key.items():
+        # Prefer the leaf-reported chassis-id over the path-extracted id
+        # because some implementations URL-encode the path key but emit
+        # the canonical form in the state leaf.
+        chassis_id = _safe_str(leaves.get("chassis-id")) or nbr_id
+        out.append(
+            LLDPNeighborState(
+                device=device,
+                interface=iface,
+                neighbor_chassis_id=chassis_id,
+                neighbor_system_name=_safe_str(leaves.get("system-name")),
+                neighbor_port_id=_safe_str(leaves.get("port-id")),
+                neighbor_port_description=_safe_str(
+                    leaves.get("port-description")
+                ),
+                neighbor_management_address=_safe_str(
+                    leaves.get("management-address")
+                ),
                 timestamp=ts,
             )
         )

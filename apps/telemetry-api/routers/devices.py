@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth.context import TenantContext, require_role
 from db import get_db
 from services.device_state import get_device_state, list_devices_with_gnmi
+from services.lldp_neighbors import get_device_neighbors as get_neighbors_svc
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -26,3 +27,12 @@ async def gnmi_sources(
 ):
     devices = await list_devices_with_gnmi(db, ctx.tenant_id)
     return {"devices": devices, "total": len(devices)}
+
+
+@router.get("/neighbors")
+async def device_neighbors(
+    device: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    ctx: TenantContext = Depends(require_role("viewer")),
+):
+    return await get_neighbors_svc(db, ctx.tenant_id, device)

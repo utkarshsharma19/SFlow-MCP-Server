@@ -1,21 +1,29 @@
 import asyncio
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Response
 
 from collectors.gnmi_client import GNMIClient
 from collectors.sflow_rt_client import SFlowRTClient
+from db import AsyncSessionLocal
+from services.metrics import render_prometheus
+from services.rls_session import bypass_rls
 from middleware.auth import APIKeyMiddleware
 from otel import setup_telemetry
 from shared.logging import configure_logging
 from routers import admin as admin_router
+from routers import admin_setup as admin_setup_router
 from routers import anomalies as anomalies_router
+from routers import chat as chat_router
+from routers import chat_user_keys as chat_user_keys_router
 from routers import tool_audit as tool_audit_router
 from routers import devices as devices_router
 from routers import fabric as fabric_router
 from routers import flows as flows_router
+from routers import intent as intent_router
 from routers import interfaces as interfaces_router
 from routers import rdma as rdma_router
 from routers import topology as topology_router
@@ -26,6 +34,8 @@ from services.gnmi_ingest import gnmi_ingestion_loop
 from services.ingest import ingestion_loop
 from services.partition_maintenance import partition_maintenance_loop
 from services.source_freshness_loop import source_freshness_loop
+from services.verity_ingest import verity_ingest_loop
+from services.webhook_dispatcher import webhook_dispatcher_loop
 
 configure_logging("flowmind-telemetry-api", level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger(__name__)
@@ -41,9 +51,11 @@ async def lifespan(app: FastAPI):
     anomaly_task = asyncio.create_task(anomaly_loop())
     partition_task = asyncio.create_task(partition_maintenance_loop())
     freshness_task = asyncio.create_task(source_freshness_loop())
+    webhook_task = asyncio.create_task(webhook_dispatcher_loop())
+    verity_task = asyncio.create_task(verity_ingest_loop())
     log.info(
-        "ingestion, baseline, anomaly, partition-maintenance, and "
-        "source-freshness loops started"
+        "ingestion, baseline, anomaly, partition-maintenance, "
+        "source-freshness, webhook-dispatcher, and verity-ingest loops started"
     )
     try:
         yield
@@ -55,6 +67,8 @@ async def lifespan(app: FastAPI):
             anomaly_task,
             partition_task,
             freshness_task,
+            webhook_task,
+            verity_task,
         ):
             t.cancel()
         await sflow.close()
@@ -73,10 +87,73 @@ app.include_router(topology_router.router)
 app.include_router(devices_router.router)
 app.include_router(rdma_router.router)
 app.include_router(fabric_router.router)
+app.include_router(intent_router.router)
 app.include_router(admin_router.router)
+app.include_router(admin_setup_router.router)
 app.include_router(tool_audit_router.router)
+app.include_router(chat_router.router)
+app.include_router(chat_user_keys_router.router)
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics_endpoint(
+    authorization: str | None = Header(default=None),
+) -> Response:
+    """Prometheus exposition. Reads cross-tenant by design (operator view).
+
+    Mounted on the app and *exempted* from APIKeyMiddleware via
+    ``APIKeyMiddleware.EXEMPT_PATHS`` — the middleware still runs on
+    every request, it just lets ``/metrics`` through unauthenticated
+    so Prometheus scrape configs (one static credential, not a
+    per-tenant key) can hit it.
+
+    Auth: when ``FLOWMIND_METRICS_TOKEN`` is set in the environment,
+    the request MUST carry ``Authorization: Bearer <token>``. Prometheus
+    supports this out of the box via ``bearer_token_file`` in the
+    scrape config. When the env is unset the endpoint is open — a
+    development convenience that must not ship to prod.
+
+    Output: ``text/plain; version=0.0.4`` per the Prometheus exposition
+    spec, with cross-tenant rollups via ``bypass_rls``.
+    """
+    expected = os.getenv("FLOWMIND_METRICS_TOKEN")
+    if expected:
+        # Case-insensitive scheme detection: RFC 7235 says the scheme
+        # ``Bearer`` is case-insensitive even if most clients capitalize
+        # it. Constant-time comparison on the token itself eliminates a
+        # timing oracle for the secret.
+        presented = _extract_bearer(authorization)
+        if presented is None:
+            raise HTTPException(
+                status_code=401,
+                detail="metrics endpoint requires Authorization: Bearer <token>",
+                headers={"WWW-Authenticate": 'Bearer realm="flowmind-metrics"'},
+            )
+        if not hmac.compare_digest(presented, expected):
+            raise HTTPException(status_code=403, detail="invalid metrics token")
+
+    async with AsyncSessionLocal() as session:
+        async with bypass_rls(session):
+            body = await render_prometheus(session)
+    return Response(content=body, media_type="text/plain; version=0.0.4")
+
+
+def _extract_bearer(header_value: str | None) -> str | None:
+    """Return the token from ``Authorization: Bearer <token>`` or None.
+
+    Tolerates the case-insensitive scheme name and surrounding
+    whitespace. Returns None for any other shape so the caller emits a
+    401 rather than crashing on malformed input.
+    """
+    if not header_value:
+        return None
+    parts = header_value.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    token = parts[1].strip()
+    return token or None

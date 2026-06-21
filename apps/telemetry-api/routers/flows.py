@@ -5,6 +5,7 @@ from auth.context import TenantContext, require_role
 from db import get_db
 from services.explain_link import explain_hot_link
 from services.flows import get_top_talkers
+from services.path_trace import find_path
 from services.protocol_mix import summarize_protocol_mix
 
 router = APIRouter(prefix="/flows", tags=["flows"])
@@ -40,3 +41,14 @@ async def protocol_mix(
     ctx: TenantContext = Depends(require_role("viewer")),
 ):
     return await summarize_protocol_mix(db, ctx.tenant_id, scope, window_minutes)
+
+
+@router.get("/path")
+async def trace_path(
+    src_ip: str = Query(...),
+    dst_ip: str = Query(...),
+    window_minutes: int = Query(default=30, ge=1, le=120),
+    db: AsyncSession = Depends(get_db),
+    ctx: TenantContext = Depends(require_role("viewer")),
+):
+    return await find_path(db, ctx.tenant_id, src_ip, dst_ip, window_minutes)

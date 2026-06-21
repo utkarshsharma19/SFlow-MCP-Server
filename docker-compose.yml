@@ -1,9 +1,21 @@
+# Full FlowMind stack for testbed + local dev.
+#
+# After bring-up:
+#   curl http://localhost:8080/health       # telemetry API
+#   curl http://localhost:8080/metrics      # Prom exposition
+#   http://localhost:6343/udp               # point sFlow agents here
+#   http://localhost:8090/mcp               # MCP server (streamable-http)
+#   http://localhost:16686                  # Jaeger UI
+#
+# Default dev key is ``dev-insecure-key`` (seeded by migration 0003).
+# Rotate via ``python -m scripts.seed create-key`` before going to prod.
+
 services:
   sflow-rt:
     image: sflow/sflow-rt:latest
     ports:
-      - '6343:6343/udp'   # sFlow listener
-      - '8008:8008'        # RESTflow API
+      - '6343:6343/udp'   # sFlow listener — point your agents here
+      - '8008:8008'        # RESTflow API the telemetry-api polls
     environment:
       - RTPROP=-Dscript.file=/data/top.js
 
@@ -15,10 +27,20 @@ services:
       POSTGRES_PASSWORD: flowmind_dev
     ports: ['5432:5432']
     volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowmind -d flowmind"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     ports: ['6379:6379']
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -40,11 +62,47 @@ services:
       API_KEYS: ${API_KEYS:-dev-insecure-key}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       OTEL_SERVICE_NAME: flowmind-telemetry-api
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # gNMI / OpenConfig collector (PR 21). Leave GNMI_TARGETS empty to
+      # idle; set to comma-separated host[:port] entries to enable.
       GNMI_TARGETS: ${GNMI_TARGETS:-}
       GNMI_USERNAME: ${GNMI_USERNAME:-admin}
       GNMI_PASSWORD: ${GNMI_PASSWORD:-}
       GNMI_POLL_INTERVAL_SECONDS: ${GNMI_POLL_INTERVAL_SECONDS:-60}
-    depends_on: [postgres, redis, sflow-rt, jaeger]
+
+      # pgcrypto data key (PR 27). Required to read/write any
+      # encrypted_secrets row; the webhook dispatcher also needs it and
+      # idles when unset. Generate once: ``openssl rand -base64 32``.
+      FLOWMIND_DATA_KEY: ${FLOWMIND_DATA_KEY:-dev-data-key-rotate-in-prod}
+      FLOWMIND_DATA_KEY_VERSION: ${FLOWMIND_DATA_KEY_VERSION:-1}
+
+      # Webhook dispatcher tuning (PR 30).
+      WEBHOOK_DISPATCH_INTERVAL: ${WEBHOOK_DISPATCH_INTERVAL:-20}
+      WEBHOOK_DISPATCH_TIMEOUT: ${WEBHOOK_DISPATCH_TIMEOUT:-5}
+      WEBHOOK_MAX_FAILURES: ${WEBHOOK_MAX_FAILURES:-10}
+
+      # Verity intent collector (PR 30). Loop idles when BASE_URL or
+      # TOKEN are unset; safe to leave blank on testbeds without Verity.
+      VERITY_BASE_URL: ${VERITY_BASE_URL:-}
+      VERITY_TOKEN: ${VERITY_TOKEN:-}
+      VERITY_POLL_INTERVAL_SECONDS: ${VERITY_POLL_INTERVAL_SECONDS:-300}
+      VERITY_CONTROLLER_ID: ${VERITY_CONTROLLER_ID:-default}
+
+      TENANT_ROUTING_TTL_SECONDS: ${TENANT_ROUTING_TTL_SECONDS:-60}
+
+      # Prometheus scrape token. When set, /metrics requires
+      # ``Authorization: Bearer <this value>``.
+      FLOWMIND_METRICS_TOKEN: ${FLOWMIND_METRICS_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sflow-rt:
+        condition: service_started
+      jaeger:
+        condition: service_started
 
   mcp-server:
     build:
@@ -54,7 +112,24 @@ services:
     environment:
       TELEMETRY_API_URL: http://telemetry-api:8080
       TELEMETRY_API_KEY: ${TELEMETRY_API_KEY:-dev-insecure-key}
-    depends_on: [telemetry-api]
+      # Redis-backed sliding-window rate limiter (PR 30). Falls back to
+      # in-memory if unreachable — fine for one replica, broken for HA.
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Circuit breaker tuning (PR 30).
+      MCP_CB_FAILURE_THRESHOLD: ${MCP_CB_FAILURE_THRESHOLD:-5}
+      MCP_CB_COOLDOWN_SECONDS: ${MCP_CB_COOLDOWN_SECONDS:-30}
+      # MCP transport auth (PR 31). When set, every HTTP request to the
+      # MCP server must carry ``X-MCP-Key: <this value>``. Stdio is
+      # exempt (calling-process identity).
+      MCP_TRANSPORT_KEY: ${MCP_TRANSPORT_KEY:-}
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: '8090'
+    depends_on:
+      telemetry-api:
+        condition: service_started
+      redis:
+        condition: service_healthy
 
 volumes:
   pgdata:
