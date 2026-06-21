@@ -102,11 +102,24 @@ def _breaker_for(path: str) -> _BreakerState:
 
 
 def _circuit_is_open(state: _BreakerState, now: float) -> bool:
+    """Check the breaker; side-effect: claim the half-open probe slot.
+
+    After cooldown elapses we let exactly ONE caller through as a probe
+    and re-arm the cooldown timer so any concurrent callers see the
+    breaker still open. Without this slot-claim, every caller after
+    cooldown would pass simultaneously and stampede a recovering
+    telemetry-API.
+
+    The next success in ``_record_success`` resets ``failures`` and
+    fully closes the breaker; a failure on the probe leaves the breaker
+    open and starts a fresh cooldown via ``_record_failure``.
+    """
     if state.failures < CB_FAILURE_THRESHOLD:
         return False
     if now - state.opened_at >= CB_COOLDOWN_SECONDS:
-        # Half-open: allow the next caller through. We *don't* reset
-        # failures yet — the next success in _record_success does that.
+        # Half-open: this caller is the probe — slide the cooldown
+        # window forward so the next caller sees the breaker open.
+        state.opened_at = now
         return False
     return True
 

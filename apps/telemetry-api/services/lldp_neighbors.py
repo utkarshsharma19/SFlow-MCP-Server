@@ -80,8 +80,9 @@ def _confidence_note(neighbors: list[dict]) -> str:
     stale = sum(1 for n in neighbors if n["is_stale"])
     note = f"{len(neighbors)} LLDP adjacencies reported from gNMI."
     if stale:
+        word = "entry has" if stale == 1 else "entries have"
         note += (
-            f" {stale} entry/entries have not refreshed in "
+            f" {stale} {word} not refreshed in "
             f"{STALE_NEIGHBOR_HOURS}h — the cable may have been pulled."
         )
     return note
@@ -100,7 +101,14 @@ async def upsert_neighbor_observation(
     neighbor_management_address: str | None,
     now: datetime | None = None,
 ) -> None:
-    """Refresh last_seen_at without bumping first_seen_at."""
+    """Refresh ``last_seen_at`` without bumping ``first_seen_at``.
+
+    Does NOT commit. The caller owns transaction boundaries — that way
+    the gNMI ingest loop can batch every neighbor from a poll into one
+    transaction instead of paying N round-trips for N neighbors. A
+    standalone caller (seed CLI, tests) commits explicitly after the
+    last call.
+    """
     now = now or datetime.now(timezone.utc)
     stmt = (
         pg_insert(LLDPNeighbor)
@@ -128,4 +136,3 @@ async def upsert_neighbor_observation(
         )
     )
     await db.execute(stmt)
-    await db.commit()

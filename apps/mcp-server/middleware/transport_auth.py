@@ -26,6 +26,7 @@ telemetry-API owns metrics. If we add them later, exempt them here.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from typing import Awaitable, Callable
@@ -82,12 +83,19 @@ class TransportAuthMiddleware:
 
 
 def _is_authorized(scope: Scope, expected_key: str) -> bool:
-    """Header first, query-string fallback."""
+    """Header first, query-string fallback.
+
+    Comparisons use ``hmac.compare_digest`` to remove the trivial
+    timing oracle on the secret. The risk here is low (this token is
+    a per-deployment shared secret on what's usually an internal
+    network), but the cost of doing it right is one stdlib call.
+    """
     headers = {
         k.decode("latin-1").lower(): v.decode("latin-1")
         for k, v in scope.get("headers", [])
     }
-    if headers.get(KEY_HEADER) == expected_key:
+    presented = headers.get(KEY_HEADER)
+    if presented is not None and hmac.compare_digest(presented, expected_key):
         return True
 
     raw_qs = scope.get("query_string", b"")
@@ -99,7 +107,10 @@ def _is_authorized(scope: Scope, expected_key: str) -> bool:
         if b"=" not in pair:
             continue
         k, _, v = pair.partition(b"=")
-        if k.decode("latin-1") == KEY_QUERY_PARAM and v.decode("latin-1") == expected_key:
+        if (
+            k.decode("latin-1") == KEY_QUERY_PARAM
+            and hmac.compare_digest(v.decode("latin-1"), expected_key)
+        ):
             return True
     return False
 

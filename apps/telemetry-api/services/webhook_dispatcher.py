@@ -294,7 +294,11 @@ async def _post_one(
 
 async def webhook_dispatcher_loop() -> None:
     """Long-running loop entered from main.py's lifespan."""
-    if os.getenv("FLOWMIND_DATA_KEY") is None:
+    # Env files commonly leave variables defined-but-empty (e.g.
+    # ``FLOWMIND_DATA_KEY=``), which os.getenv() returns as "" rather
+    # than None. Treat empty as unset — services.crypto._data_key()
+    # would otherwise raise on the first secret read and crash the loop.
+    if not os.getenv("FLOWMIND_DATA_KEY"):
         log.warning(
             "FLOWMIND_DATA_KEY unset — webhook dispatcher disabled. "
             "Set the data key to enable signed delivery."

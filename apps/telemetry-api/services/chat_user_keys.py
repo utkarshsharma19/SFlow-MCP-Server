@@ -103,6 +103,11 @@ async def create_user_key(
     key_hash = hash_api_key(plaintext)
     key_prefix = plaintext[:8]
 
+    # Atomicity: flush the new APIKey so it gets a server-assigned id
+    # we can reference in the ChatUserKey row, but do NOT commit yet.
+    # The whole operation (key + mapping) lands in one transaction —
+    # if the mapping insert fails, the rollback also discards the
+    # never-used APIKey row, avoiding an orphaned active key.
     new_key = APIKey(
         tenant_id=tenant_id,
         key_hash=key_hash,
@@ -111,8 +116,7 @@ async def create_user_key(
         name=f"chat-user:{chat_user_id}",
     )
     db.add(new_key)
-    await db.commit()
-    await db.refresh(new_key)
+    await db.flush()
 
     # Deactivate the prior mapping (if any) and add the new one.
     existing = (
@@ -137,6 +141,7 @@ async def create_user_key(
             )
         )
     await db.commit()
+    await db.refresh(new_key)
 
     return {
         "chat_user_id": chat_user_id,

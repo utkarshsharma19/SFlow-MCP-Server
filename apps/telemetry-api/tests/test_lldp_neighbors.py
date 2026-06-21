@@ -26,7 +26,7 @@ def test_confidence_note_empty_explains_three_causes():
     assert "L2 adjacencies" in note
 
 
-def test_confidence_note_flags_stale_count():
+def test_confidence_note_flags_stale_count_plural():
     neighbors = [
         {"is_stale": False},
         {"is_stale": True},
@@ -34,8 +34,17 @@ def test_confidence_note_flags_stale_count():
     ]
     note = _confidence_note(neighbors)
     assert "3 LLDP adjacencies" in note
-    assert "2 entry" in note or "2 entries" in note
+    assert "2 entries have not refreshed" in note
     assert "pulled" in note
+
+
+def test_confidence_note_flags_stale_count_singular():
+    """One stale entry → 'entry has not refreshed', not 'entry/entries'."""
+    neighbors = [{"is_stale": False}, {"is_stale": True}]
+    note = _confidence_note(neighbors)
+    assert "1 entry has not refreshed" in note
+    # No leakage of the developer-facing slash form
+    assert "/" not in note.split("has not refreshed")[0].split(" ")[-1]
 
 
 def test_confidence_note_no_stale_is_clean():

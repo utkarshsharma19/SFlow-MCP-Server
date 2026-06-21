@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -105,10 +106,11 @@ async def metrics_endpoint(
 ) -> Response:
     """Prometheus exposition. Reads cross-tenant by design (operator view).
 
-    Mounted directly on the app (not behind the tenant-aware
-    APIKeyMiddleware) because Prometheus scrape configs carry one
-    static credential, not a per-tenant key. The path is in
-    ``APIKeyMiddleware.EXEMPT_PATHS`` for the same reason.
+    Mounted on the app and *exempted* from APIKeyMiddleware via
+    ``APIKeyMiddleware.EXEMPT_PATHS`` — the middleware still runs on
+    every request, it just lets ``/metrics`` through unauthenticated
+    so Prometheus scrape configs (one static credential, not a
+    per-tenant key) can hit it.
 
     Auth: when ``FLOWMIND_METRICS_TOKEN`` is set in the environment,
     the request MUST carry ``Authorization: Bearer <token>``. Prometheus
@@ -121,17 +123,37 @@ async def metrics_endpoint(
     """
     expected = os.getenv("FLOWMIND_METRICS_TOKEN")
     if expected:
-        if not authorization or not authorization.startswith("Bearer "):
+        # Case-insensitive scheme detection: RFC 7235 says the scheme
+        # ``Bearer`` is case-insensitive even if most clients capitalize
+        # it. Constant-time comparison on the token itself eliminates a
+        # timing oracle for the secret.
+        presented = _extract_bearer(authorization)
+        if presented is None:
             raise HTTPException(
                 status_code=401,
                 detail="metrics endpoint requires Authorization: Bearer <token>",
                 headers={"WWW-Authenticate": 'Bearer realm="flowmind-metrics"'},
             )
-        presented = authorization[len("Bearer "):].strip()
-        if presented != expected:
+        if not hmac.compare_digest(presented, expected):
             raise HTTPException(status_code=403, detail="invalid metrics token")
 
     async with AsyncSessionLocal() as session:
         async with bypass_rls(session):
             body = await render_prometheus(session)
     return Response(content=body, media_type="text/plain; version=0.0.4")
+
+
+def _extract_bearer(header_value: str | None) -> str | None:
+    """Return the token from ``Authorization: Bearer <token>`` or None.
+
+    Tolerates the case-insensitive scheme name and surrounding
+    whitespace. Returns None for any other shape so the caller emits a
+    401 rather than crashing on malformed input.
+    """
+    if not header_value:
+        return None
+    parts = header_value.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    token = parts[1].strip()
+    return token or None

@@ -77,6 +77,26 @@ def test_open_response_shape(monkeypatch):
     assert resp["retry_after_seconds"] == int(c.CB_COOLDOWN_SECONDS)
 
 
+def test_half_open_admits_one_probe_then_re_arms(monkeypatch):
+    """After cooldown elapses, exactly ONE caller passes; concurrent
+    callers in the same instant see the breaker still open. Prevents
+    a thundering herd hitting a recovering telemetry-API."""
+    c = _import_client(monkeypatch)
+    c._reset_breakers_for_tests()
+    state = c._breaker_for("/foo")
+    for _ in range(c.CB_FAILURE_THRESHOLD):
+        c._record_failure(state, now=0.0)
+
+    cooldown_end = c.CB_COOLDOWN_SECONDS + 0.1
+    # First caller after cooldown: probe slot, sees breaker as not-open
+    assert c._circuit_is_open(state, now=cooldown_end) is False
+    # Immediate second caller: cooldown timer was reset by the probe,
+    # so the breaker is open again
+    assert c._circuit_is_open(state, now=cooldown_end + 0.001) is True
+    # Far in the future: another probe slot opens
+    assert c._circuit_is_open(state, now=cooldown_end + c.CB_COOLDOWN_SECONDS + 0.1) is False
+
+
 def test_breakers_are_per_path(monkeypatch):
     """A failing /foo must not trip /bar."""
     c = _import_client(monkeypatch)

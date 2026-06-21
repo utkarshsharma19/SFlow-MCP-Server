@@ -182,6 +182,12 @@ async def gnmi_ingestion_loop(client: GNMIClient) -> None:
                 queue_rows = await normalize_queue_stats(queues, router)
                 lldp_rows = await normalize_lldp_neighbors(lldp, router)
 
+                # All four feeds share one session + one commit per
+                # cycle. LLDP rows take the upsert path (refresh
+                # last_seen_at on existing rows, preserve first_seen_at)
+                # — ``upsert_neighbor_observation`` no longer commits on
+                # its own so the whole tick is atomic; on a 64-leaf
+                # fabric that's 1 transaction instead of 64.
                 async with AsyncSessionLocal() as session:
                     if if_rows:
                         session.add_all([DeviceStateMinute(**r) for r in if_rows])
@@ -189,14 +195,9 @@ async def gnmi_ingestion_loop(client: GNMIClient) -> None:
                         session.add_all([BGPSessionMinute(**r) for r in bgp_rows])
                     if queue_rows:
                         session.add_all([QueueStatsMinute(**r) for r in queue_rows])
-                    await session.commit()
-
-                # LLDP rows take the upsert path (refresh last_seen_at on
-                # existing rows, preserve first_seen_at). Each call commits
-                # — small N, infrequent change, simpler than batching.
-                for row in lldp_rows:
-                    async with AsyncSessionLocal() as session:
+                    for row in lldp_rows:
                         await upsert_neighbor_observation(session, **row)
+                    await session.commit()
 
                 if otel.flows_ingested is not None:
                     otel.flows_ingested.add(
